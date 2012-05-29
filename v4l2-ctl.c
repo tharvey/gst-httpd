@@ -26,7 +26,6 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/ioctl.h>
-//#include <asm/types.h>
 
 #include <linux/videodev2.h>
 #include <gst/gst.h>
@@ -35,63 +34,34 @@
 #include "http-server.h"
 #include "v4l2-ctl.h"
 
-static int
-xioctl (int fd, int request, void *arg)
-{
-	int r;
-
-	do r = ioctl (fd, request, arg);
-	while (-1 == r && EINTR == errno);
-
-	return r;
-}
-
 #define WRITE(x, args...)  gst_http_client_write(x, args)
 #define WRITELN(x, args...)  gst_http_client_writeln(x, args)
 
-static void
-enumerate_menu (int fd, struct v4l2_queryctrl *q, GstHTTPClient *c)
-{
-	struct v4l2_querymenu querymenu;
-	int i;
-
-        //printf ("  Menu items:\n");
-	WRITE(c, "\t\t\"menu\": \"");
-
-        memset (&querymenu, 0, sizeof (querymenu));
-        querymenu.id = q->id;
-
-	i = 0;
-        for (querymenu.index = q->minimum;
-             querymenu.index <= q->maximum;
-              querymenu.index++) {
-                if (0 == ioctl (fd, VIDIOC_QUERYMENU, &querymenu)) {
-                        //printf ("  %s\n", querymenu.name);
-			WRITE(c, (i++ > 0)?",":"");
-			WRITE(c, "%d:%s", querymenu.index, querymenu.name);
-                } else {
-                        perror ("VIDIOC_QUERYMENU");
-                        exit (EXIT_FAILURE);
-                }
-        }
-	WRITELN(c, "\",");
-}
-
+/** v4l2_control_type_str - return a static string describing the control type
+ * @param type
+ * @returns static string
+ */
 static const char *
-v4l2_type_str(int type) {
+v4l2_control_type_str(int type)
+{
 	switch (type) {
-	case V4L2_CTRL_TYPE_INTEGER: return "int"; break;
-	case V4L2_CTRL_TYPE_BOOLEAN: return "bool"; break;
-	case V4L2_CTRL_TYPE_MENU: return "menu"; break;
-	case V4L2_CTRL_TYPE_BUTTON: return "button"; break;
-	case V4L2_CTRL_TYPE_INTEGER64: return "int64"; break;
+	case V4L2_CTRL_TYPE_INTEGER:    return "int"; break;
+	case V4L2_CTRL_TYPE_BOOLEAN:    return "bool"; break;
+	case V4L2_CTRL_TYPE_MENU:       return "menu"; break;
+	case V4L2_CTRL_TYPE_BUTTON:     return "button"; break;
+	case V4L2_CTRL_TYPE_INTEGER64:  return "int64"; break;
 	case V4L2_CTRL_TYPE_CTRL_CLASS: return "control"; break;
 	}
 	return "unknown";
 }
 
+
+/** v4l2_control_name_str - return a sanitized name
+ * @param q - control
+ * @returns sanitized string - all lowercase and underscores for any non-alpha
+ */
 static const char *
-v4l2_name_str(struct v4l2_queryctrl *q)
+v4l2_control_name_str(struct v4l2_queryctrl *q)
 {
 	static char name[32];
 	int i;
@@ -107,6 +77,97 @@ v4l2_name_str(struct v4l2_queryctrl *q)
 	return name;
 }
 
+
+/** find_control - find a v4l2 control matching 'name'
+ * @param fd - file descriptor of v4l2 device
+ * @param name of control
+ * @returns id of control or -1 if not found
+ */
+static int
+find_control(int fd, const char *name)
+{
+	struct v4l2_queryctrl queryctrl;
+	struct v4l2_querymenu querymenu;
+	int i = 0;
+
+	memset (&queryctrl, 0, sizeof (queryctrl));
+	for (queryctrl.id = V4L2_CID_BASE;
+			queryctrl.id < V4L2_CID_LASTP1;
+			queryctrl.id++)
+	{
+		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+			if ( (strcmp(name, queryctrl.name) == 0)
+		    || (strcmp(name, v4l2_control_name_str(&queryctrl)) == 0) )
+			{
+				return queryctrl.id;
+			}
+		} else {
+			if (errno == EINVAL)
+				continue;
+
+			perror ("VIDIOC_QUERYCTRL");
+		}
+	}
+
+	for (queryctrl.id = V4L2_CID_PRIVATE_BASE;;
+			queryctrl.id++)
+	{
+		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+			if ( (strcmp(name, queryctrl.name) == 0)
+		    || (strcmp(name, v4l2_control_name_str(&queryctrl)) == 0) )
+			{
+				return queryctrl.id;
+			}
+		} else {
+			if (errno == EINVAL)
+				break;
+
+			perror ("VIDIOC_QUERYCTRL");
+		}
+	}
+
+	return -1;
+}
+
+
+/** enumerate_menu - send JSON description of v4l2 menu control options
+ * @param fd - file descriptor of v4l2 device
+ * @param q - control
+ * @param c - client to send JSON response to
+ */
+static void
+enumerate_menu (int fd, struct v4l2_queryctrl *q, GstHTTPClient *c)
+{
+	struct v4l2_querymenu querymenu;
+	int i;
+
+	WRITE(c, "\t\t\"menu\": \"");
+
+	memset (&querymenu, 0, sizeof (querymenu));
+	querymenu.id = q->id;
+
+	i = 0;
+	for (querymenu.index = q->minimum;
+	     querymenu.index <= q->maximum;
+	     querymenu.index++)
+	{
+		if (0 == ioctl (fd, VIDIOC_QUERYMENU, &querymenu)) {
+			WRITE(c, (i++ > 0)?",":"");
+			WRITE(c, "%d:%s", querymenu.index, querymenu.name);
+		} else {
+			perror ("VIDIOC_QUERYMENU");
+		}
+	}
+	WRITELN(c, "\",");
+}
+
+
+/** v4l2_control - send JSON description of a v4l2 control 
+ * @param fd - file descriptor of v4l2 device
+ * @param q - control
+ * @param c - client to send JSON response to
+ * @param i - pointer to num items
+ */
 static void
 v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 {
@@ -125,22 +186,18 @@ v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 	}
 	else {
 		control.id = q->id;
-		//control.value = q->default_value;
 		if (ioctl (fd, VIDIOC_G_CTRL, &control)) {
 			perror ("VIDIOC_G_CTRL");
-		} else {
 		}
 	}
 
-	//printf ("Control %s\n", q->name);
-
 	WRITE(c, ((*i)++ > 0)?",\r\n\t":"\t");
 	WRITELN(c, "{");
-	//WRITELN(c, "\t\t\"name\": \"%s\",", v4l2_name_str(q));
+	//WRITELN(c, "\t\t\"name\": \"%s\",", v4l2_control_name_str(q));
 	WRITELN(c, "\t\t\"name\" : \"%s\",", q->name);
 	WRITELN(c, "\t\t\"id\"   : \"0x%x\",", q->id);
 	WRITELN(c, "\t\t\"flags\": \"0x%x\",", q->flags);
-	WRITELN(c, "\t\t\"type\" : \"%s\",", v4l2_type_str(q->type));
+	WRITELN(c, "\t\t\"type\" : \"%s\",", v4l2_control_type_str(q->type));
 	WRITELN(c, "\t\t\"val\"  : \"%d\",", control.value);
 	WRITELN(c, "\t\t\"min\"  : \"%d\",", q->minimum);
 	WRITELN(c, "\t\t\"max\"  : \"%d\",", q->maximum);
@@ -152,52 +209,11 @@ v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 	WRITE(c, "\t}");
 }
 
-static int
-find_control(int fd, const char *name)
-{
-	struct v4l2_queryctrl queryctrl;
-	struct v4l2_querymenu querymenu;
-	int i = 0;
 
-	memset (&queryctrl, 0, sizeof (queryctrl));
-	for (queryctrl.id = V4L2_CID_BASE;
-			queryctrl.id < V4L2_CID_LASTP1;
-			queryctrl.id++)
-	{
-		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
-			if ( (strcmp(name, queryctrl.name) == 0)
-		    || (strcmp(name, v4l2_name_str(&queryctrl)) == 0) )
-			{
-				return queryctrl.id;
-			}
-		} else {
-			if (errno == EINVAL)
-				continue;
-
-			perror ("VIDIOC_QUERYCTRL");
-		}
-	}
-
-	for (queryctrl.id = V4L2_CID_PRIVATE_BASE;;
-			queryctrl.id++)
-	{
-		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
-			if ( (strcmp(name, queryctrl.name) == 0)
-		    || (strcmp(name, v4l2_name_str(&queryctrl)) == 0) )
-			{
-				return queryctrl.id;
-			}
-		} else {
-			if (errno == EINVAL)
-				break;
-
-			perror ("VIDIOC_QUERYCTRL");
-		}
-	}
-
-	return -1;
-}
-
+/** enumerate_controls - send a JSON description of all v4l2 controls
+ * @param fd - file descriptor of v4l2 device
+ * @client c - client to send JSON response to
+ */
 static void
 enumerate_controls(int fd, GstHTTPClient *c)
 {
@@ -245,78 +261,134 @@ enumerate_controls(int fd, GstHTTPClient *c)
 	WRITELN(c, "}");
 }
 
+
+static int
+set_control(int fd, int id, int *val)
+{
+	struct v4l2_queryctrl queryctrl;
+	struct v4l2_control ctrl;
+	int ret;
+
+	memset (&queryctrl, 0, sizeof (queryctrl));
+	queryctrl.id = id;
+	if ((ret = ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl))) {
+		return ret;
+	}
+	memset (&ctrl, 0, sizeof (ctrl));
+	ctrl.id = id;
+	if (val)
+		ctrl.value = *val;
+	else
+		ctrl.value = queryctrl.default_value;
+printf("Setting %s(0x%x)=%d\n", queryctrl.name, id, ctrl.value);
+	return (ioctl(fd, VIDIOC_S_CTRL, &ctrl));
+}
+
+/** v4l2_config - get/set v4l2 device controls
+ * @param url
+ * @param client to respond to
+ * @data pointer to server
+ *
+ * URL Query must be of format [v4l2-id|v4l2-control-name]=<value>.
+ * If no query, will return JSON response for all controls
+ * A query of 'defaults' will set default values for all controls
+ * 
+ */
 gboolean
 v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 {
 	int fd;
-	gchar *dev, *name, *id, *value;
+	int matched = 0;
+	gchar *dev;
 
-	printf("Serving v4l2_config to %s:%d\n", client->peer_ip, client->port);
 	dev = get_query_field(url, "device");
 	if (!dev)
 		dev = g_strdup("/dev/video0");
-	printf("dev='%s'\n", dev);
+printf("Serving v4l2_config to %s:%d dev=%s\n",
+	client->peer_ip, client->port, dev);
 
 	fd = open (dev, O_RDWR | O_NONBLOCK, 0);
+	g_free(dev);
 	if (-1 == fd) {
-		perror("open");
-		goto err;
-	}	
-
-	id = get_query_field(url, "id");
-	name = get_query_field(url, "name");
-	value = get_query_field(url, "value");
-	if ( (id || name) && value) {
-		struct v4l2_queryctrl queryctrl;
-		struct v4l2_control ctrl;
-		const char *result;
-
-		memset (&queryctrl, 0, sizeof (queryctrl));
-		if (name) {
-			int val;
-
-			if ((val = find_control(fd, name)) == -1)
-				goto err;
-			queryctrl.id = val;
-		} else {
-			queryctrl.id = strtol(id, NULL, 0);
-		}
-		if (ioctl(fd, VIDIOC_QUERYCTRL, &queryctrl)) {
-			perror("VIDIOC_QUERYCTRL");
-		}
-
-		memset (&ctrl, 0, sizeof (ctrl));
-		ctrl.id = queryctrl.id;
-		ctrl.value = strtol(value, NULL, 0);
-
-		printf("Setting %s (0x%x) to %d\n", id, ctrl.id, ctrl.value);
-		result = "Ok";
-		if (ioctl(fd, VIDIOC_S_CTRL, &ctrl)) {
-			perror("VIDIOC_S_CTRL");
-			gst_http_client_writeln(client, "500 Error");
-			result = "Error";
-		} else {
-			gst_http_client_writeln(client, "200 Ok");
-		}
-		WRITELN(client, "");
-		WRITELN(client, "%s (0x%x) set to %d - %s",
-			id, ctrl.id, ctrl.value, result);
+		fprintf(stderr, "open '%s' failed: %s (%d)", dev, strerror(errno), errno);
+		gst_http_client_writeln(client, "404 Not Found");
+		return TRUE;
 	}
 
-	else {
+	if (url->query && strstr(url->query, "defaults")) {
+		int i = 0;
+
+printf("resetting %s to defaults\n", dev);
+		for (i = V4L2_CID_BASE; i < V4L2_CID_LASTP1; i++)
+			if (set_control(fd, i, NULL))
+				continue;
+
+		for (i = V4L2_CID_PRIVATE_BASE;; i++)
+			if (set_control(fd, i, NULL))
+				break;
+
+		gst_http_client_writeln(client, "200 Ok");
+		WRITELN(client, "");
+		WRITELN(client, "Reset controls");
+		goto out;
+	}
+
+	if (url->querys) {
+		struct v4l2_queryctrl queryctrl;
+		struct v4l2_control ctrl;
+		char *p, *name, *value;
+		int i;
+		unsigned char header_sent = 0;
+
+		memset (&queryctrl, 0, sizeof (queryctrl));
+		for (i = 0; url->querys[i]; i++) {
+			name = strtok(url->querys[i], "=");
+			value = strtok(NULL, "=");
+			if (!name || !value)
+				continue;
+			queryctrl.id = strtol(name, NULL, 0);
+			if (queryctrl.id >= V4L2_CID_BASE) {
+				if (ioctl(fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+					perror("VIDIOC_QUERYCTRL");
+				} else
+					name = queryctrl.name;
+			} else if ((queryctrl.id = find_control(fd, name)) == -1)
+				continue;
+
+			matched++;
+			memset (&ctrl, 0, sizeof (ctrl));
+			ctrl.id = queryctrl.id;
+			ctrl.value = strtol(value, NULL, 0);
+
+			if (ioctl(fd, VIDIOC_S_CTRL, &ctrl)) {
+				perror("VIDIOC_S_CTRL");
+				if (header_sent++ == 0) {
+					gst_http_client_writeln(client, "500 Error");
+					WRITELN(client, "");
+				}
+				WRITELN(client, "Failed setting %s (0x%x) to %d",
+					name, ctrl.id, ctrl.value);
+			} else {
+				if (header_sent++ == 0) {
+					gst_http_client_writeln(client, "200 Ok");
+					WRITELN(client, "");
+				}
+				WRITELN(client, "%s (0x%x) set to %d",
+					name, ctrl.id, ctrl.value);
+			}
+		}
+	}
+
+	if (!matched)	{
 		enumerate_controls(fd, client);
 	}
 
-	g_free(dev);
-	g_free(id);
-	g_free(name);
-	g_free(value);
+out:
+	close(fd);
 	return TRUE;
 
 err:
-	g_free(dev);
+	close(fd);
 	gst_http_client_writeln(client, "404 Not Found");
 	return TRUE;
 }
-
-
