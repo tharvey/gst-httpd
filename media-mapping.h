@@ -47,9 +47,8 @@ struct _MediaMapping {
         gchar         *path;
         gchar         *desc;
         gchar         *pipeline_desc; // gst-launch text
-        //gboolean       stream;        // True=stream, False=image
-        //gchar         *boundary;
 	gchar         *mimetype;
+	gchar         *v4l2srcdev;    // capture source device
 	gchar         *capture;       // printf fmt string for capture fname
 
         /* stream resources (private) */

@@ -831,6 +831,7 @@ gst_http_server_add_mapping_pipe( GstHTTPServer *server, const gchar *path,
   const gchar *desc, const gchar *pipeline)
 {
 	MediaMapping *mapping;
+	gchar **elems;
 
 	GST_INFO ("Adding '%s' '%s' '%s'", path, desc, pipeline);
 
@@ -846,6 +847,16 @@ gst_http_server_add_mapping_pipe( GstHTTPServer *server, const gchar *path,
 	mapping->mimetype = g_strdup("multipart/x-mixed-replace");
 	//mapping->mimetype = g_strdup("image/jpeg");
 	mapping->server = server;
+	elems = g_strsplit(pipeline, "!", 0);
+	if (elems[0] && strstr(elems[0], "v4l2src")) {
+		char *p = strstr(elems[0], "device=");
+		if (p) {
+			mapping->v4l2srcdev = g_strstrip(g_strdup(p + 7));
+		} else {
+			mapping->v4l2srcdev = "/dev/video0";
+		}
+	}
+	g_strfreev(elems);
 
 	GST_HTTP_SERVER_LOCK (server);
 	server->mappings = g_list_append(server->mappings, (gpointer) mapping);
@@ -904,7 +915,7 @@ gst_http_server_remove_mapping( GstHTTPServer *server, MediaMapping *mapping)
 	g_free(mapping->path);
 	g_free(mapping->desc);
 	g_free(mapping->pipeline_desc);
-	//g_free(mapping->boundary);
+	g_free(mapping->v4l2srcdev);
 	g_free(mapping->mimetype);
 	g_free(mapping->capture);
 	g_mutex_free (mapping->lock);
