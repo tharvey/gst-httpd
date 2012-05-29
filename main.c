@@ -22,8 +22,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <signal.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <gst/gst.h>
 
 #include "http-server.h"
@@ -214,13 +216,10 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 	GError *err = NULL;
 	int i, j;
 	gchar *str;
-	time_t now = time(NULL);
-	char *timestr = ctime(&now);
 
 	GST_INFO("Serving server_status to %s:%d", client->peer_ip, client->port);
 
-	timestr[strlen(timestr)-1] = 0;
-	//WRITELN(client, "Last-Modified: %s", timestr);
+	//WRITELN(client, "Last-Modified: %s", unix2date(time(NULL)));
 	//WRITELN(client, "Expires: %s", timestr);
 	WRITELN(client, "no-cache");
 	WRITELN(client, "Content-Type: application/json");
@@ -239,7 +238,8 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		if (*name == '/' && (strlen(name) > 1)) name++;
 		WRITELN(client, "{");
 		WRITELN(client, "\t\t\"path\": \"%s\",", name);
-		WRITELN(client, "\t\t\"desc\": \"%s\"", m->desc);
+		WRITELN(client, "\t\t\"desc\": \"%s\",", m->desc);
+		WRITELN(client, "\t\t\"dev\" : \"%s\"", m->v4l2srcdev?m->v4l2srcdev:"");
 		WRITE(client, "\t}");
 	}
 	WRITE(client, "\r\n  ]");
@@ -272,7 +272,7 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 	GST_HTTP_SERVER_UNLOCK(server);
 
 #ifdef SYS_STAT
-{
+if (p_jif && p_prev_jif) {
 	char buf[80];
 	unsigned long total, used, mfree, buffers, cached;
 	unsigned total_diff = (unsigned)(p_jif->total - p_prev_jif->total);
@@ -315,7 +315,7 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		WRITELN(client, "\t\"used\": \"%luK\",", used);
 		WRITELN(client, "\t\"free\": \"%luK\",", mfree);
 		WRITELN(client, "\t\"buff\": \"%luK\",", buffers);
-		WRITELN(client, "\t\"cached\": \"%luK\",", cached);
+		WRITELN(client, "\t\"cached\": \"%luK\"", cached);
 		g_strfreev(lines);
 	}
 	WRITE(client, "  }");
@@ -328,7 +328,7 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		//GST_ERROR("error:%s", err->message);
 		g_error_free(err);
 	} else {
-		WRITELN(client, "\t\"avg\": \"%s\",", g_strstrip(str));
+		WRITELN(client, "\t\"avg\": \"%s\"", g_strstrip(str));
 		g_free(str);
 	}
 	WRITELN(client, "  }");
@@ -353,6 +353,10 @@ static struct mimetype mime_types[] = {
 	{ NULL, NULL }
 };
 
+/** mime_lookup - return mime-type for a path
+ * @param path
+ * @return mime-type
+ */
 static const char*
 mime_lookup(const char* path)
 {
@@ -372,14 +376,32 @@ mime_lookup(const char* path)
 	return "application/octet-stream";
 }	
 
+
+/** unix2date - convert a time_t to a string for Last-Modified
+ */
+char *
+unix2date(time_t ts)
+{
+	static char str[128];
+	struct tm *t = gmtime(&ts);
+
+	strftime(str, sizeof(str), "%a, %d %b %Y %H:%M:%S GMT", t);
+	return str;
+}
+
+
+/** serve_page - serve a page via HTTP
+ * @param url requested
+ * @param client to serve to
+ * @param data - docroot
+ */
 gboolean
 serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 {
-	FILE *fp;
+	int fd;
 	char buf[1024];
 	int sz;
 	struct stat sb;
-	char *timestr;
 	const char *docroot = (const char*) data;
 	gchar *path;
 	char *physpath;
@@ -397,11 +419,12 @@ serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 	}
 	/* ensure file is readable */
 	if ( (stat(physpath, &sb) < 0)
-	  || !(fp = fopen(physpath, "r")))
+	  || (fd = open(physpath, O_RDONLY)) == -1)
 	{
 		goto err;
 	}
 	if (!S_ISREG(sb.st_mode)) {
+		close(fd);
 		goto err;
 	}
 	/* obtain mimetype */
@@ -410,22 +433,16 @@ serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 	GST_INFO("Serving %d byte %s to %s:%d as %s", sb.st_size, physpath,
 		client->peer_ip, client->port, mimetype);
 
-	timestr = ctime(&sb.st_mtime);
-	timestr[strlen(timestr)-1] = 0;
-	gst_http_client_writeln(client, "Last-Modified: %s", timestr);
+	gst_http_client_writeln(client, "Last-Modified: %s", unix2date(sb.st_mtime));
 	gst_http_client_writeln(client, "Content-Length: %ld", sb.st_size);
 	gst_http_client_writeln(client, "Content-Type: %s", mimetype);
 	gst_http_client_writeln(client, "");
 
-	while (!feof(fp)) {
-		sz = fread(buf, 1, sizeof(buf)-1, fp);
-		if (sz < 0)
-			break;
-		buf[sz] = 0;
-		gst_http_client_write(client, "%s", buf);
+	while ( (sz = read(fd, buf, sizeof(buf))) > 0) {
+		write(client->sock, buf, sz);
 	}
-	fflush(fp);
-	fclose(fp);
+	write(client->sock, "", 0);
+	close(fd);
 	
 	free(physpath);
 	g_free(path);
@@ -439,6 +456,9 @@ err:
 }
 #endif // #ifdef LOCAL_PAGES
 
+
+/** main function
+ */
 int
 main (int argc, char *argv[])
 {
@@ -446,7 +466,7 @@ main (int argc, char *argv[])
 	void *gst_handle = NULL;
 	gchar *service = "8080";
 	gchar *docroot = NULL;
-	gchar *sysadmin = NULL;
+	gchar *sysadmin = "server.json";
 	gchar *pidfile = NULL;
 	GstHTTPServer *server;
 	GError *err = NULL;
@@ -516,7 +536,7 @@ main (int argc, char *argv[])
 
 	/* add custom URL handlers */
 #ifdef V4L2_CTLS
-	gst_http_server_add_mapping_func ( server, "v4l2-ctl",
+	gst_http_server_add_mapping_func ( server, "v4l2cfg.json",
 		"Video Controls", v4l2_config, server);
 #endif
 	if (sysadmin) {
