@@ -231,7 +231,7 @@ parse_string(char **src) {
 	return p;
 }
 
-// HTTP header - see http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html
+// HTTP header - see http://www.w3.org/Protocols/HTTP/1.0/draft-ietf-http-spec.html#Message-Headers
 static void
 client_header(GstHTTPClient *client)
 {
@@ -499,8 +499,10 @@ gst_http_client_accept (GstHTTPClient * client, GIOChannel * channel)
 	GST_DEBUG_OBJECT (client, "Accepted connection %s:%d on %s",
 		client->peer_ip, client->port, client->serv_ip);
 
+#if 0 // if we set NONBLOCK we need to check for EAGAIN on each read/write call
 	/* set non-blocking mode so that we can cacel the communication */
 	fcntl (fd, F_SETFL, O_NONBLOCK);
+#endif
 	client->sock = fd;
 
 	/* find the context to add the watch */
