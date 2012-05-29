@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+
+	<link href="jquery-ui.css" rel="stylesheet" type="text/css"/>
+	<script src="jquery.js"></script>
+	<script src="jquery-ui.js"></script>
+	<style type="text/css">
+		.ui-slider { margin: 10px; }
+		.ui-slider-horizontal {
+			margin: 5px;
+			width: 200px;
+		}
+		.slider-text {
+			margin: 0px;
+			padding: 0px;
+			height: 0px;
+		}
+	</style>
+
+	<script language="JavaScript">
+
+var server_stats_url = 'server.json';
+var v4l2_config_url = 'v4l2cfg.json';
+var streams = {};
+var timers = {};
+var controls = {};
+var width = 320;
+var height = 240;
+
+function timed_message(id, msg, ms)
+{
+	$(id).html(msg);
+	if (timers[id])
+		clearTimeout(timers[id]);
+	timers[id] = setTimeout(function() {
+		$(id).html('&nbsp;');
+	}, ms);
+}
+
+function slider_moved(event, ui)
+{ 
+	var id = $(this).attr('id').replace('slider_', '');
+	var c = controls[id];
+	$('#value_' + id).html(c.name + ' (' + ui.value + ')');
+	var last_update = $('#slider_' + id).slider("option","last_update");
+	if (
+	   $('#video_title').attr('stream')
+	   //$('#video_title').html() != ''
+	   && (event.type == 'slidestop' || event.timeStamp - last_update > 100)
+	) {
+
+		$('#slider_' + id).slider( "option",
+			"last_update", event.timeStamp);
+		var dev = "/dev/video0";
+		for (var i = 0; i < streams.length; i++) {
+	   		if ($('#video_title').attr('stream') == streams[i].path)
+			//if ($('#video_title').html() == streams[i].path)
+			{
+				dev = streams[i].dev;
+				break;
+			}
+		}
+		$.get(v4l2_config_url + '?device=' + dev + '&'
+			+ id + '=' + ui.value);
+	}
+}
+
+function update_server_status(d)
+{
+	var t = '';
+	if (!d) return;
+
+	streams = d.media;
+	for (var i = 0; i < d.media.length; i++) {
+		t += '<li title="' + d.media[i].desc;
+		//t += ' onclick="launch_stream(this); ';
+		t += '">';
+		t += '<a href="#" onclick="launch_stream(this);return false;">'
+		//t += '<a href="#" onclick="launch_stream(d.media[i]);return false;">'
+			 + d.media[i].path + '</a>';
+		t += '</li>';
+	}
+	$('#streamlist').html(t);
+
+	t = '';
+	for (var i = 0; i < d.clients.length; i++) {
+		t += '<li>' + d.clients[i].ip;
+		t += ':' + d.clients[i].port;
+		if (typeof d.clients[i].path === 'undefined') {
+		} else {
+			t += ' fps:' + d.clients[i].framerate;
+			t += ' bitrate:' + d.clients[i].bitrate;
+			t += ' framesize:' + d.clients[i].framesize;
+		}
+		t += '</li>';
+	}
+	$('#clientlist').html(t);
+
+	if (d.cpu) {
+		t  = "CPU:";
+		t += 'usr:' + d.cpu.usr;
+		t += 'sys:' + d.cpu.sys;
+		t += 'nic:' + d.cpu.nic;
+		t += 'idle:' + d.cpu.idle;
+		t += 'io:' + d.cpu.io;
+		t += 'irq:' + d.cpu.irq;
+		t += 'sirq:' + d.cpu.sirq;
+		$('#cpustats').html(t);
+	}
+}
+
+function update_v4l2_controls(d)
+{
+	if (!d) return;
+
+	$('#video_controls').html('');
+	for (var i = 0; i < d.controls.length; i++) {
+		var c = d.controls[i];
+		var id = c.name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
+		controls[id] = c;
+		if (!document.getElementById("slider_" + id))
+		{
+			var t = '';
+			t += '<div id="slider_' + id + '"></div>';
+			t += '<div id="value_' + id + '" class="slider-text"></div>';
+			$(t).appendTo('#video_controls');
+			$('#slider_' + id).slider({
+				max: parseInt(c.max),
+				min: parseInt(c.min),
+				step: parseInt(c.step),
+				stop: slider_moved,
+				slide: slider_moved,
+				last_update: 0,
+				name: c.name,
+			});
+			$('#value_' + id).position({
+				my: "right top",
+				at: "left top",
+				of: "#slider_" + id,
+				offset: "-20 0",
+			});
+		}
+		$('#value_' + id).html(c.name + ' (' + c.val + ')');
+		$('#slider_' + id).slider('value', c.val);
+	}
+	$('<button id="button_defaults"\>').appendTo('#video_controls')
+		.html("Reset To Defaults");
+	$('#button_defaults').click(function() {
+		$.get(v4l2_config_url + '?defaults');
+	});
+	update_layout();
+}
+
+function launch_stream(item)
+{
+	for (var i = 0; i < streams.length; i++) {
+		if (streams[i].path == item.innerHTML)
+			break;
+	}
+	if (i == streams.length)
+		return;
+	var media = streams[i];
+	$('#video_title').attr('stream', media.path);
+	if (media.dev != '') {
+		$('#video_controls').show();
+		//$('#video_controls').removeAttr('style');
+		//$('#video_controls').css({'visibility':'hidden'});
+		update_layout();
+		$.getJSON(v4l2_config_url+'?device='+media.dev, function(d) {
+			update_v4l2_controls(d);
+			$('#video_stream').attr('src', media.path);
+		});
+	}
+	else {
+		$('#video_controls').hide();
+		//$('#video_controls').css({'visibility':'hidden'});
+		update_layout();
+		$('#video_stream').attr('src', media.path);
+	}
+
+	var t = '';
+	t += item.innerHTML;
+	t += '<button id="button_toggle">Stop</button>';
+	$('#video_title').html(t);
+	$('#button_toggle').click(function() {
+		this.stream = item.innerHTML;
+		if (this.innerHTML == 'Stop') {
+			$('#video_stream').attr('src', '');
+			this.innerHTML = 'Play';
+		} else {
+			$('#video_stream').attr('src',
+				$('#video_title').attr('stream'));
+			this.innerHTML = 'Stop';
+		}
+	});
+	$('#button_toggle').css({'float':'right'});
+}
+
+function update_layout()
+{
+	// TODO: use width/height of stream dynamically
+	/* adjust element sizes (they are sized based on what they require
+	 * before their children have been re-positioned
+	 */
+	$('#video_stream').attr('width', width);
+	$('#video_stream').attr('height', height);
+	$('#video_container').height(Math.max($('#video_controls').height(),
+		$('#video_stream').height()) + 2*$('#video_title').height());
+	//$('#video_controls').width(document.innerWidth - $('#video_stream').width());
+	$('#video_title').width($('#video_stream').width());
+	$('#video_stream').position({
+		my: "left top",
+		at: "left top",
+		of: "#video_container"
+	});
+	$('#video_title').position({
+		my: "left top",
+		at: "left bottom",
+		of: "#video_stream",
+		offset: "0 10",
+	});
+	$('#video_controls').position({
+		my: "right top",
+		at: "left top",
+		of: "#video_stream",
+		offset: "-20 0",
+	});
+/* results in a negative height after controls populated - not clear why
+	$('#server_container').position({
+		my: "left top",
+		at: "left bottom",
+		of: "#video_container"
+	});
+*/
+}
+
+$(document).ready(function() {
+	update_layout();
+	/* get initial server stats */
+	$.getJSON(server_stats_url, update_server_status);
+	/* 1Hz timer for continual stats update */
+	window.setInterval(function() {
+		$.getJSON(server_stats_url, update_server_status);
+	}, 1000);
+});
+
+	</script>
+	<title>gst-httpd</title>
+</head>
+
+<body>
+
+	<div id="video_container">
+		<div id="video_title">&nbsp;</div>
+		<iframe id="video_stream"></iframe>
+		<div id="video_controls"></div>
+	</div>
+
+	<div id="server_container">
+	<hr>
+		<p id="cpustats"></p>
+		Clients:<ul id="clientlist"></ul>
+		Streams:<ul id="streamlist"></ul>
+	</div>
+
+</body>
+</html>
