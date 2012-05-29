@@ -486,14 +486,12 @@ main (int argc, char *argv[])
 
 	printf("gst-mjpeg-streamer v%s\n", VERSION);
 
-	/* init gstreamer and create mainloop */
-	gst_init (&argc, &argv);
-	loop = g_main_loop_new (NULL, FALSE);
-
-	GST_DEBUG_CATEGORY_INIT (gst_http_debug, "gst_http", 0, "gst_http");
-
+	/* must init the threading system before using any other glib function
+	 */
 	if (!g_thread_supported())
 		g_thread_init(NULL);
+
+	GST_DEBUG_CATEGORY_INIT (gst_http_debug, "gst_http", 0, "gst_http");
 
 	ctx = g_option_context_new ("gst-httpd");
 	g_option_context_add_main_entries(ctx, options, NULL);
@@ -506,6 +504,10 @@ main (int argc, char *argv[])
 	/* install signal handler */ 
 	signal(SIGINT, sighandler);
 	signal(SIGSEGV, sighandler);
+
+	/* init gstreamer and create mainloop */
+	gst_init (&argc, &argv);
+	loop = g_main_loop_new (NULL, FALSE);
 
 	/* create a server instance */
 	server = gst_http_server_new ();
