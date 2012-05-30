@@ -593,7 +593,6 @@ unmanage_client (GstHTTPClient * client, GstHTTPServer * server)
 {
 	MediaMapping *mapping = client->mapping;
 
-GST_INFO("unmanage client %s:%d %p", client->peer_ip, client->port, client);
 	GST_DEBUG_OBJECT (server, "unmanage client %p", client);
 
 	gst_http_client_set_server (client, NULL);
@@ -605,11 +604,9 @@ GST_INFO("unmanage client %s:%d %p", client->peer_ip, client->port, client);
 		GST_HTTP_MAPPING_LOCK(server);
 		mapping->clients = g_list_remove(mapping->clients, client);
 		remaining_clients = g_list_length(mapping->clients); 
-GST_INFO("%d remaining", remaining_clients);
 		GST_HTTP_MAPPING_UNLOCK(server);
 
 		if (remaining_clients == 0) {
-GST_INFO("stopping stream");
 			gst_http_server_stop_media(server, mapping);
 		}
 	}
@@ -1201,7 +1198,6 @@ gst_http_server_stop_media (GstHTTPServer *server, MediaMapping *mapping)
 	while (g_list_length(mapping->clients))
 	{
 		GstHTTPClient *client = g_list_nth_data(mapping->clients, 0);
-GST_INFO("closing %s:%d\n", client->peer_ip, client->port);
 		gst_http_client_close(client, 3);
 		mapping->clients = g_list_remove(mapping->clients, client);
 
@@ -1211,7 +1207,6 @@ GST_INFO("closing %s:%d\n", client->peer_ip, client->port);
 		GST_HTTP_SERVER_UNLOCK (server);
 		g_object_unref (client);
 	}
-GST_INFO("no more clients in mapping %s", mapping->path);
 	g_object_unref (mapping->pipeline);
 	mapping->pipeline = NULL;
 	GST_HTTP_MAPPING_UNLOCK (mapping);
