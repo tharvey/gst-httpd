@@ -47,7 +47,6 @@ function slider_moved(event, ui)
 	var last_update = $('#slider_' + id).slider("option","last_update");
 	if (
 	   $('#video_title').attr('stream')
-	   //$('#video_title').html() != ''
 	   && (event.type == 'slidestop' || event.timeStamp - last_update > 100)
 	) {
 
@@ -56,7 +55,6 @@ function slider_moved(event, ui)
 		var dev = "/dev/video0";
 		for (var i = 0; i < streams.length; i++) {
 	   		if ($('#video_title').attr('stream') == streams[i].path)
-			//if ($('#video_title').html() == streams[i].path)
 			{
 				dev = streams[i].dev;
 				break;
@@ -74,15 +72,27 @@ function update_server_status(d)
 
 	streams = d.media;
 	for (var i = 0; i < d.media.length; i++) {
+	   	if ($('#video_title').attr('stream') == d.media[i].path) {
+			if (d.media[i].width != width
+			 || d.media[i].height != height) {
+				width = d.media[i].width;
+			 	height = d.media[i].height;
+				update_layout();
+			}
+			t += '<em>';
+		}
 		t += '<li title="' + d.media[i].desc + '">';
 		t += '<a href="#" onclick="launch_stream(this);return false;">'
 			 + d.media[i].path + '</a>';
 		t += ' - ' + d.media[i].desc;
 		t += '</li>';
+	   	if ($('#video_title').attr('stream') == d.media[i].path)
+			t += '</em>';
 	}
 	$('#streamlist').html(t);
 
 	t = '';
+
 	for (var i = 0; i < d.clients.length; i++) {
 		t += '<li>' + d.clients[i].ip;
 		t += ':' + d.clients[i].port;

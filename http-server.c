@@ -961,7 +961,11 @@ gst_http_server_get_mapping(GstHTTPServer *server, const gchar *path)
 }
 
 
-// called when a message appears on the bus
+/** gst_bus_callback - called when a message appears on the bus
+ * @param bus
+ * @param message
+ * @param data - media mapping pointer
+ */
 static gboolean
 gst_bus_callback (GstBus *bus, GstMessage *message, gpointer data)
 {
@@ -1009,11 +1013,10 @@ gst_bus_callback (GstBus *bus, GstMessage *message, gpointer data)
 	}
 }
 
-/**
- * frame_available:
- * @data: frame data
- * @size: size of data
- * @client: client
+
+/** gst_buffer_available - callback when frame buffer available to sink
+ * @param elt - target element
+ * @param mapping - media mapping
  *
  * Called when the Media has a frame available for the clients
  */
@@ -1029,6 +1032,18 @@ gst_buffer_available(GstElement *elt, MediaMapping *mapping)
 	/* get the buffer from appsink */
 	buffer = gst_app_sink_pull_buffer (GST_APP_SINK (elt));
 	GST_DEBUG ("%s frame available: %d bytes\n", mapping->path, buffer->size);
+
+	/* get width/height of stream */
+	if (0 == mapping->width) {
+		GstCaps *caps = gst_buffer_get_caps(buffer);
+		const GstStructure *str = gst_caps_get_structure (caps, 0);
+		if (!gst_structure_get_int (str, "width", &mapping->width) ||
+		    !gst_structure_get_int (str, "height", &mapping->height)) {
+			GST_ERROR("No width/height available");
+		}
+		GST_INFO("The video size of this set of capabilities is %dx%d",
+			mapping->width, mapping->height);
+	}
 
 	/* push buffer to clients*/
 	GST_HTTP_MAPPING_LOCK (mapping);

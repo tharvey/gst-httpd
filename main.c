@@ -215,6 +215,8 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		WRITELN(client, "{");
 		WRITELN(client, "\t\t\"path\": \"%s\",", name);
 		WRITELN(client, "\t\t\"desc\": \"%s\",", m->desc);
+		WRITELN(client, "\t\t\"width\": \"%d\",", m->width);
+		WRITELN(client, "\t\t\"height\": \"%d\",", m->height);
 		WRITELN(client, "\t\t\"dev\" : \"%s\"", m->v4l2srcdev?m->v4l2srcdev:"");
 		WRITE(client, "\t}");
 	}

@@ -33,34 +33,44 @@ typedef struct _MediaURL MediaURL;
 
 struct _MediaURL {
 	gchar *method;
-	gchar *path;
-	gchar *query;
-	gchar **querys;
+	gchar *path;    // path portion of the URL (following prot/server and preceeding '?')
+	gchar *query;   // full query string (text following a '?' in URL
+	gchar **querys; // query string split by '&'
 };
 
 typedef gboolean (*MappingFunc)(MediaURL *url, GstHTTPClient *client, gpointer data);
 
 extern gchar *get_query_field(MediaURL *url, const char* name);
 
+/** MediaMapping - A mapping of a unique URL path to a resource
+ *
+ * There are two types of mappings:
+ *   stream - a gstreamer based pipeline
+ *   callback - a custom handler   
+ */
 struct _MediaMapping {
-        /* configuration */
-        gchar         *path;
-        gchar         *desc;
-        gchar         *pipeline_desc; // gst-launch text
+	/* configuration */
+	gchar         *path;
+	gchar         *desc;
+
+	/* stream resources */
+	gchar         *pipeline_desc; // gst-launch text
 	gchar         *mimetype;
 	gchar         *v4l2srcdev;    // capture source device
 	gchar         *capture;       // printf fmt string for capture fname
+	guint          count;
+	GList         *clients;
+	GstHTTPServer *server;
+	GstElement    *pipeline;
+	guint         width;          // width of stream frame
+  guint         height;         // height of stream frame
 
-        /* stream resources (private) */
-        guint          count;
-        GMutex        *lock;
-        GList         *clients;
-        GstHTTPServer *server;
-        GstElement    *pipeline;
-
-	/* callback resources (private) */
+	/* callback resources */
 	MappingFunc   func;
 	gpointer      *data;
+
+	/* misc */
+	GMutex        *lock;
 };
 
 #endif /* _MEDIA_MAPPING_H_ */
