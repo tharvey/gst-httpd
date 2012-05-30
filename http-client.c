@@ -216,6 +216,13 @@ gst_http_client_close(GstHTTPClient *client, int code)
 		client->peer_ip, client->port, code);
 
 	close(client->sock);
+//	g_signal_emit (client, gst_http_client_signals[SIGNAL_CLOSED], 0, NULL);
+}
+
+static void
+_gst_http_client_close(GstHTTPClient *client, int code)
+{
+	gst_http_client_close(client, code);
 	g_signal_emit (client, gst_http_client_signals[SIGNAL_CLOSED], 0, NULL);
 }
 
@@ -305,12 +312,12 @@ handle_request(GstHTTPClient *client)
 	if (bytes < 0) {
 		GST_ERROR("read error %d from %s:%d:%d:%p\n", bytes,
 			client->peer_ip, client->port, client->sock, client);
-		gst_http_client_close(client, -1);
+		_gst_http_client_close(client, -1);
 		return FALSE;
 	}
 	// this happens when client closes their end
 	if (bytes == 0) {
-		gst_http_client_close(client, -2);
+		_gst_http_client_close(client, -2);
 		return FALSE;
 	}
 	client->headers = g_strsplit(header, "\r\n", 0);
@@ -362,7 +369,7 @@ handle_request(GstHTTPClient *client)
 
 			if (gst_http_server_play_media(server, m, client)) {
 				gst_http_client_writeln(client, "415 Unsupported Media Type");
-				gst_http_client_close(client, 1);
+				_gst_http_client_close(client, 1);
 			}
 
 			goto out;
@@ -372,14 +379,14 @@ handle_request(GstHTTPClient *client)
 			GST_DEBUG_OBJECT(client, "got function mapping");
 			client_header(client);
 			if (client->mapping->func(url, client, client->mapping->data))
-				gst_http_client_close(client, 0);
+				_gst_http_client_close(client, 0);
 
 			goto out;
 		}
 	}
 
 	gst_http_client_writeln(client, "404 Not Found");
-	gst_http_client_close(client, 1);
+	_gst_http_client_close(client, 1);
 
 out:
 	if (url) {
