@@ -50,7 +50,7 @@ GMainLoop *loop;
 // CPU stats courtesy busybox/top.c
 struct sysstat {
 	unsigned long long usr, nic, sys, idle;
-	unsigned long long iowait, irq, softirq, steal;	
+	unsigned long long io, irq, sirq, steal;	
 	unsigned long long total;
 	unsigned long long busy;
 	time_t time;
@@ -58,31 +58,7 @@ struct sysstat {
 struct sysstat stats[2];
 struct sysstat *p_jif, *p_prev_jif;
 
-#define CALC_STAT(xxx) char xxx[8]
-#define SHOW_STAT(xxx) fmt_100percent_8(xxx, (unsigned)(p_jif->xxx - p_prev_jif->xxx), total_diff)
-
-/* formats 7 char string (8 with terminating NUL) */
-static char *fmt_100percent_8(char pbuf[8], unsigned value, unsigned total)
-{
-        unsigned t;
-        if (value >= total) { /* 100% ? */
-                strcpy(pbuf, "  100% ");
-                return pbuf;
-        }
-        /* else generate " [N/space]N.N% " string */
-        value = 1000 * value / total;
-        t = value / 100;
-        value = value % 100;
-        pbuf[0] = ' ';
-        pbuf[1] = t ? t + '0' : ' ';
-        pbuf[2] = '0' + (value / 10);
-        pbuf[3] = '.';
-        pbuf[4] = '0' + (value % 10);
-        pbuf[5] = '%';
-        pbuf[6] = ' ';
-        pbuf[7] = '\0';
-        return pbuf;
-}
+#define SHOW_STAT(xxx) WRITE(client, "\t\""#xxx"\": \"%2.1f%%\"", ((unsigned)(p_jif->xxx - p_prev_jif->xxx) >= total_diff)?100.0:(((unsigned)(p_jif->xxx - p_prev_jif->xxx) * 100.0) / total_diff))
 
 /* called on 1Hz timer - udpate system stats */
 static gboolean
@@ -111,11 +87,11 @@ sysstat_timer(gpointer data)
 		for (i = 0; lines[i]; i++) {
 			int ret = sscanf(lines[i], "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
 				&s->usr, &s->nic, &s->sys, &s->idle,
-				&s->iowait, &s->irq, &s->softirq, &s->steal);
+				&s->io, &s->irq, &s->sirq, &s->steal);
 			if (ret >= 4) {
 				s->total = s->usr + s->nic + s->sys + s->idle
-					 + s->iowait + s->irq + s->softirq + s->steal;
-				s->busy = s->total - s->idle - s->iowait;
+					 + s->io+ s->irq + s->sirq + s->steal;
+				s->busy = s->total - s->idle - s->io;
 				break;
 			}
 		}
@@ -231,7 +207,7 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 	for (i = 0, j = 0; i < g_list_length(server->mappings); i++) {
 		MediaMapping *m = g_list_nth_data(server->mappings, i);
 		char *name;
-		if (!m->desc)
+		if (!m->desc || !m->pipeline_desc)
 			continue;
  		name = m->path;
 		WRITE(client, (j++ > 0)?",\r\n\t":"\t");
@@ -257,7 +233,7 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 				WRITELN(client, "\t\t\"path\": \"%s\",", c->mapping->path);
 				WRITELN(client, "\t\t\"framesize\": \"%ldK\",",
 					c->ewma_framesize / 1024);
-				WRITELN(client, "\t\t\"bitrate\": \"%2fkbps\",",
+				WRITELN(client, "\t\t\"bitrate\": \"%2.0fkbps\",",
 					(float) avg_get_avg(&c->avg_bytes) * 8.0 / 1024);
 				WRITELN(client, "\t\t\"framerate\": \"%ld\",",
 					avg_get_avg(&c->avg_frames));
@@ -276,24 +252,19 @@ if (p_jif && p_prev_jif) {
 	char buf[80];
 	unsigned long total, used, mfree, buffers, cached;
 	unsigned total_diff = (unsigned)(p_jif->total - p_prev_jif->total);
+	static unsigned long sused = 0;
+	static unsigned long spused = 0;
 	if (total_diff == 0) total_diff = 1;
-	CALC_STAT(usr);
-	CALC_STAT(sys);
-	CALC_STAT(nic);
-	CALC_STAT(idle);
-	CALC_STAT(iowait);
-	CALC_STAT(irq);
-	CALC_STAT(softirq);
 
 	WRITELN(client, ",");
 	WRITELN(client, "  \"cpu\": {");
-	WRITELN(client, "\t\"usr\": \"%s\",", SHOW_STAT(usr));
-	WRITELN(client, "\t\"sys\": \"%s\",", SHOW_STAT(sys));
-	WRITELN(client, "\t\"nic\": \"%s\",", SHOW_STAT(nic));
-	WRITELN(client, "\t\"idle\": \"%s\",", SHOW_STAT(idle));
-	WRITELN(client, "\t\"io\": \"%s\",", SHOW_STAT(iowait));
-	WRITELN(client, "\t\"irq\": \"%s\",", SHOW_STAT(irq));
-	WRITELN(client, "\t\"sirq\": \"%s\"", SHOW_STAT(softirq));
+	SHOW_STAT(usr); WRITELN(client, ",");
+	SHOW_STAT(sys); WRITELN(client, ",");
+	SHOW_STAT(nic); WRITELN(client, ",");
+	SHOW_STAT(idle); WRITELN(client, ",");
+	SHOW_STAT(io); WRITELN(client, ",");
+	SHOW_STAT(irq); WRITELN(client, ",");
+	SHOW_STAT(sirq); WRITELN(client, "");
 	WRITE(client, "  }");
 
 	WRITELN(client, ",");
@@ -311,12 +282,15 @@ if (p_jif && p_prev_jif) {
 		sscanf(lines[1], "MemFree: %lu %80s\n", &mfree, buf);
 		sscanf(lines[2], "Buffers: %lu %80s\n", &buffers, buf);
 		sscanf(lines[3], "Cached: %lu %80s\n", &cached, buf);
+		g_strfreev(lines);
+
 		used = total - mfree;
+		if (sused == 0) sused = used;
 		WRITELN(client, "\t\"used\": \"%luK\",", used);
 		WRITELN(client, "\t\"free\": \"%luK\",", mfree);
 		WRITELN(client, "\t\"buff\": \"%luK\",", buffers);
-		WRITELN(client, "\t\"cached\": \"%luK\"", cached);
-		g_strfreev(lines);
+		WRITELN(client, "\t\"cached\": \"%luK\",", cached);
+		WRITELN(client, "\t\"delta\": \"%luK\"", used - sused);
 	}
 	WRITE(client, "  }");
 
