@@ -72,21 +72,26 @@ function update_server_status(d)
 
 	streams = d.media;
 	for (var i = 0; i < d.media.length; i++) {
-	   	if ($('#video_title').attr('stream') == d.media[i].path) {
-			if (d.media[i].width != width
-			 || d.media[i].height != height) {
-				width = d.media[i].width;
-			 	height = d.media[i].height;
-				update_layout();
+		var m = d.media[i];
+	   	if ($('#video_title').attr('stream') == m.path) {
+			if ( m.width != width
+			  || m.height != height)
+			{
+				if (m.width > 0 && m.height > 0)
+				{
+					width = m.width;
+			 		height = m.height;
+					update_layout();
+				}
 			}
 			t += '<em>';
 		}
-		t += '<li title="' + d.media[i].desc + '">';
+		t += '<li title="' + m.desc + '">';
 		t += '<a href="#" onclick="launch_stream(this);return false;">'
-			 + d.media[i].path + '</a>';
-		t += ' - ' + d.media[i].desc;
+			 + m.path + '</a>';
+		t += ' - ' + m.desc;
 		t += '</li>';
-	   	if ($('#video_title').attr('stream') == d.media[i].path)
+	   	if ($('#video_title').attr('stream') == m.path)
 			t += '</em>';
 	}
 	$('#streamlist').html(t);
