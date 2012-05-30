@@ -34,6 +34,7 @@
 #include "http-server.h"
 #include "v4l2-ctl.h"
 
+#define DPRINTF(x, args...) fprintf(stdout, x, args)
 #define WRITE(x, args...)  gst_http_client_write(x, args)
 #define WRITELN(x, args...)  gst_http_client_writeln(x, args)
 
@@ -51,6 +52,23 @@ v4l2_control_type_str(int type)
 	case V4L2_CTRL_TYPE_BUTTON:     return "button"; break;
 	case V4L2_CTRL_TYPE_INTEGER64:  return "int64"; break;
 	case V4L2_CTRL_TYPE_CTRL_CLASS: return "control"; break;
+	}
+	return "unknown";
+}
+
+
+/** v4l2_control_class_str - return a static string describing the control class 
+ * @param id 
+ * @returns static string
+ */
+static const char *
+v4l2_control_class_str(int id)
+{
+	switch (V4L2_CTRL_ID2CLASS(id)) {
+	case V4L2_CTRL_CLASS_USER:    return "user"; break;
+	case V4L2_CTRL_CLASS_MPEG:    return "mpeg"; break;
+	case V4L2_CTRL_CLASS_CAMERA:  return "camera"; break;
+	case V4L2_CTRL_CLASS_FM_TX:   return "fm_tx"; break;
 	}
 	return "unknown";
 }
@@ -178,6 +196,7 @@ v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 		return;
 
 	memset (&control, 0, sizeof (control));
+/*
 	if (q->type == V4L2_CTRL_TYPE_INTEGER64 ||
 	    q->type == V4L2_CTRL_TYPE_STRING ||
             (V4L2_CTRL_ID2CLASS(q->id) != V4L2_CTRL_CLASS_USER &&
@@ -185,18 +204,21 @@ v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 	{
 	}
 	else {
+*/
 		control.id = q->id;
 		if (ioctl (fd, VIDIOC_G_CTRL, &control)) {
 			perror ("VIDIOC_G_CTRL");
 		}
+/*
 	}
+*/
 
 	WRITE(c, ((*i)++ > 0)?",\r\n\t":"\t");
 	WRITELN(c, "{");
 	//WRITELN(c, "\t\t\"name\": \"%s\",", v4l2_control_name_str(q));
 	WRITELN(c, "\t\t\"name\" : \"%s\",", q->name);
 	WRITELN(c, "\t\t\"id\"   : \"0x%x\",", q->id);
-	WRITELN(c, "\t\t\"flags\": \"0x%x\",", q->flags);
+	//WRITELN(c, "\t\t\"flags\": \"0x%x\",", q->flags);
 	WRITELN(c, "\t\t\"type\" : \"%s\",", v4l2_control_type_str(q->type));
 	WRITELN(c, "\t\t\"val\"  : \"%d\",", control.value);
 	WRITELN(c, "\t\t\"min\"  : \"%d\",", q->minimum);
@@ -204,8 +226,8 @@ v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 	WRITELN(c, "\t\t\"step\" : \"%d\",", q->step);
 	if (q->type == V4L2_CTRL_TYPE_MENU)
 		enumerate_menu (fd, q, c);
-	WRITELN(c, "\t\t\"priv\": \"%s\"", (q->id >= V4L2_CID_PRIVATE_BASE)?
-		"true":"false");
+	//WRITELN(c, "\t\t\"priv\": \"%s\",", (q->id >= V4L2_CID_PRIVATE_BASE)?"true":"false");
+	WRITELN(c, "\t\t\"class\": \"%s\"", v4l2_control_class_str(q->id));
 	WRITE(c, "\t}");
 }
 
@@ -230,30 +252,56 @@ enumerate_controls(int fd, GstHTTPClient *c)
 
 	memset (&queryctrl, 0, sizeof (queryctrl));
 
-	for (queryctrl.id = V4L2_CID_BASE;
-			queryctrl.id < V4L2_CID_LASTP1;
-			queryctrl.id++)
-	{
-		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+	// enumerate extended controls (if fail use old method)
+	//queryctrl.id = V4L2_CTRL_CLASS_CAMERA | V4L2_CTRL_FLAG_NEXT_CTRL;
+	queryctrl.id = V4L2_CTRL_FLAG_NEXT_CTRL;
+	if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+		queryctrl.id = V4L2_CTRL_FLAG_NEXT_CTRL;
+		while (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
 			v4l2_control(fd, &queryctrl, c, &i);
-		} else {
-			if (errno == EINVAL)
-				continue;
-
-			perror ("VIDIOC_QUERYCTRL");
+			queryctrl.id |= V4L2_CTRL_FLAG_NEXT_CTRL;
 		}
 	}
 
-	for (queryctrl.id = V4L2_CID_PRIVATE_BASE;;
-			queryctrl.id++)
-	{
-		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
-			v4l2_control(fd, &queryctrl, c, &i);
-		} else {
-			if (errno == EINVAL)
-				break;
+	else {
+		for (queryctrl.id = V4L2_CID_BASE;
+				queryctrl.id < V4L2_CID_LASTP1;
+				queryctrl.id++)
+		{
+			if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+/*
+				if (queryctrl.type == V4L2_CTRL_TYPE_INTEGER64 ||
+	    			queryctrl.type == V4L2_CTRL_TYPE_STRING ||
+           			 (V4L2_CTRL_ID2CLASS(queryctrl.id) != V4L2_CTRL_CLASS_USER &&
+             			queryctrl.id < V4L2_CID_PRIVATE_BASE))
+					continue;
+*/
+				v4l2_control(fd, &queryctrl, c, &i);
+			} else {
+				if (errno == EINVAL)
+					continue;
+				perror ("VIDIOC_QUERYCTRL");
+			}
+		}
 
+		for (queryctrl.id = V4L2_CID_PRIVATE_BASE;;
+				queryctrl.id++)
+		{
+			if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+/*
+				if (queryctrl.type == V4L2_CTRL_TYPE_INTEGER64 ||
+	    			queryctrl.type == V4L2_CTRL_TYPE_STRING ||
+           			 (V4L2_CTRL_ID2CLASS(queryctrl.id) != V4L2_CTRL_CLASS_USER &&
+             			queryctrl.id < V4L2_CID_PRIVATE_BASE))
+					continue;
+*/
+				v4l2_control(fd, &queryctrl, c, &i);
+			} else {
+				if (errno == EINVAL)
+					break;
+	
 			perror ("VIDIOC_QUERYCTRL");
+			}
 		}
 	}
 
@@ -280,7 +328,7 @@ set_control(int fd, int id, int *val)
 		ctrl.value = *val;
 	else
 		ctrl.value = queryctrl.default_value;
-printf("Setting %s(0x%x)=%d\n", queryctrl.name, id, ctrl.value);
+	DPRINTF("Setting %s(0x%x)=%d\n", queryctrl.name, id, ctrl.value);
 	return (ioctl(fd, VIDIOC_S_CTRL, &ctrl));
 }
 
@@ -304,21 +352,21 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 	dev = get_query_field(url, "device");
 	if (!dev)
 		dev = g_strdup("/dev/video0");
-printf("Serving v4l2_config to %s:%d dev=%s\n",
-	client->peer_ip, client->port, dev);
+	DPRINTF("Serving v4l2_config to %s:%d dev=%s\n",
+		client->peer_ip, client->port, dev);
 
 	fd = open (dev, O_RDWR | O_NONBLOCK, 0);
-	g_free(dev);
 	if (-1 == fd) {
 		fprintf(stderr, "open '%s' failed: %s (%d)", dev, strerror(errno), errno);
 		gst_http_client_writeln(client, "404 Not Found");
+		g_free(dev);
 		return TRUE;
 	}
 
 	if (url->query && strstr(url->query, "defaults")) {
 		int i = 0;
 
-printf("resetting %s to defaults\n", dev);
+	DPRINTF("resetting %s to defaults\n", dev);
 		for (i = V4L2_CID_BASE; i < V4L2_CID_LASTP1; i++)
 			if (set_control(fd, i, NULL))
 				continue;
@@ -385,10 +433,12 @@ printf("resetting %s to defaults\n", dev);
 
 out:
 	close(fd);
+	g_free(dev);
 	return TRUE;
 
 err:
 	close(fd);
+	g_free(dev);
 	gst_http_client_writeln(client, "404 Not Found");
 	return TRUE;
 }
