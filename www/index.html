@@ -74,12 +74,10 @@ function update_server_status(d)
 
 	streams = d.media;
 	for (var i = 0; i < d.media.length; i++) {
-		t += '<li title="' + d.media[i].desc;
-		//t += ' onclick="launch_stream(this); ';
-		t += '">';
+		t += '<li title="' + d.media[i].desc + '">';
 		t += '<a href="#" onclick="launch_stream(this);return false;">'
-		//t += '<a href="#" onclick="launch_stream(d.media[i]);return false;">'
 			 + d.media[i].path + '</a>';
+		t += ' - ' + d.media[i].desc;
 		t += '</li>';
 	}
 	$('#streamlist').html(t);
@@ -90,25 +88,44 @@ function update_server_status(d)
 		t += ':' + d.clients[i].port;
 		if (typeof d.clients[i].path === 'undefined') {
 		} else {
+			t += ' framesize:' + d.clients[i].framesize;
 			t += ' fps:' + d.clients[i].framerate;
 			t += ' bitrate:' + d.clients[i].bitrate;
-			t += ' framesize:' + d.clients[i].framesize;
 		}
 		t += '</li>';
 	}
 	$('#clientlist').html(t);
 
+	t = '<ul>';
 	if (d.cpu) {
-		t  = "CPU:";
-		t += 'usr:' + d.cpu.usr;
-		t += 'sys:' + d.cpu.sys;
-		t += 'nic:' + d.cpu.nic;
-		t += 'idle:' + d.cpu.idle;
-		t += 'io:' + d.cpu.io;
-		t += 'irq:' + d.cpu.irq;
-		t += 'sirq:' + d.cpu.sirq;
-		$('#cpustats').html(t);
+		t += '<li>';
+		t += 'CPU: ';
+		t += ' usr:' + d.cpu.usr;
+		t += ' sys:' + d.cpu.sys;
+		t += ' nic:' + d.cpu.nic;
+		t += ' idle:' + d.cpu.idle;
+		t += ' io:' + d.cpu.io;
+		t += ' irq:' + d.cpu.irq;
+		t += ' sirq:' + d.cpu.sirq;
+		t += '</li>';
 	}
+	if (d.memory) {
+		t += '<li>';
+		t += 'MEM: ';
+		t += ' delta:' + d.memory.delta;
+		t += ' used:' + d.memory.used;
+		t += ' free:' + d.memory.free;
+		t += ' buff:' + d.memory.buff;
+		t += ' cached:' + d.memory.cached;
+		t += '</li>';
+	}
+	if (d.memory) {
+		t += '<li>';
+		t += 'Load: ' + d.load.avg;
+		t += '</li>';
+	}
+	t += '</ul>';
+	$('#server_stats').html(t);
 }
 
 function update_v4l2_controls(d)
@@ -260,7 +277,7 @@ $(document).ready(function() {
 
 	<div id="server_container">
 	<hr>
-		<p id="cpustats"></p>
+		Server:<p id="server_stats"></p>
 		Clients:<ul id="clientlist"></ul>
 		Streams:<ul id="streamlist"></ul>
 	</div>
