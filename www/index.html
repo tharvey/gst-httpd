@@ -103,6 +103,7 @@ function update_server_status(d)
 		t += ':' + d.clients[i].port;
 		if (typeof d.clients[i].path === 'undefined') {
 		} else {
+			t += ' ' + d.clients[i].path;
 			t += ' framesize:' + d.clients[i].framesize;
 			t += ' fps:' + d.clients[i].framerate;
 			t += ' bitrate:' + d.clients[i].bitrate;

@@ -41,12 +41,14 @@
 #define DEFAULT_ADDRESS         "0.0.0.0"
 #define DEFAULT_SERVICE         "8080"
 #define DEFAULT_NAME            "gst-httpd"
-#define DEFAULT_BACKLOG         5
+#define DEFAULT_BACKLOG         15
 
 /* Define to use the SO_LINGER option so that the server sockets can be resused
  * sooner. Disabled for now because it is not very well implemented by various
  * OSes and it causes clients to fail to read the TEARDOWN response. */
 #undef USE_SOLINGER
+
+static void unmanage_client (GstHTTPClient * client, GstHTTPServer * server);
 
 enum
 {
@@ -55,6 +57,7 @@ enum
   PROP_SERVICE,
   PROP_NAME,
   PROP_BACKLOG,
+	PROP_MEDIA_MAPPING,
 
   PROP_LAST
 };
@@ -128,6 +131,18 @@ gst_http_server_class_init (GstHTTPServerClass * klass)
           "of pending connections may grow", 0, G_MAXINT, DEFAULT_BACKLOG,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+	/**
+	 * GstHTTPServer::media-mapping
+	 *
+	 * The media mapping to use for this server. By default the server has no
+	 * media mapping and thus cannot map urls to media streams.
+	 */
+	g_object_class_install_property (gobject_class, PROP_MEDIA_MAPPING,
+	g_param_spec_object ("media-mapping", "Media Mapping",
+			"The media mapping to use for client session",
+			GST_TYPE_HTTP_MEDIA_MAPPING,
+			G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   klass->create_client = default_create_client;
   klass->accept_client = default_accept_client;
 
@@ -142,7 +157,7 @@ gst_http_server_init (GstHTTPServer * server)
   server->service = g_strdup (DEFAULT_SERVICE);
   server->name = g_strdup (DEFAULT_NAME);
   server->backlog = DEFAULT_BACKLOG;
-  server->mappings = NULL;
+  server->media_mapping = gst_http_media_mapping_new ();
   server->clients = NULL;
 }
 
@@ -154,25 +169,19 @@ gst_http_server_finalize (GObject * object)
 
 	GST_DEBUG_OBJECT (server, "finalize server");
 
-	for (i = 0; i < g_list_length(server->clients); i++)
-	{
-		GstHTTPClient *client = g_list_nth_data(server->clients, i);
-		gst_http_client_close(client, 3);
-	}
-	g_list_free (server->clients);
-
-	//for (i = 0; i < g_list_length(server->mappings); i++)
-	while (g_list_length(server->mappings))
-	{
-		//MediaMapping *mapping = g_list_nth_data(server->mappings, i);
-		MediaMapping *mapping = g_list_nth_data(server->mappings, 0);
-		gst_http_server_remove_mapping( server, mapping);
-	}
-	g_list_free (server->mappings);
-
 	g_free (server->address);
 	g_free (server->service);
 	g_free (server->name);
+
+	if (server->media_mapping)
+		g_object_unref (server->media_mapping);
+
+	for (i = 0; i < g_list_length(server->clients); i++)
+	{
+		GstHTTPClient *client = g_list_nth_data(server->clients, i);
+		unmanage_client(client, server);
+	}
+	g_list_free (server->clients);
 
 	g_mutex_free (server->lock);
 
@@ -364,25 +373,59 @@ gst_http_server_get_backlog (GstHTTPServer * server)
   return result;
 }
 
+
 /**
- * gst_http_server_num_mappings:
+ * gst_http_server_set_media_mapping:
  * @server: a #GstHTTPServer
+ * @mapping: a #GstHTTPMediaMapping
  *
- * The number of current media mappings
- *
- * Returns: the number of media mappings.
+ * configure @mapping to be used as the media mapping of @server.
  */
-gint
-gst_http_server_num_mappings (GstHTTPServer * server)
+void
+gst_http_server_set_media_mapping (GstHTTPServer * server,
+    GstHTTPMediaMapping * mapping)
 {
-	int res = 0;
+  GstHTTPMediaMapping *old;
+
+  g_return_if_fail (GST_IS_HTTP_SERVER (server));
+
+  if (mapping)
+    g_object_ref (mapping);
 
   GST_HTTP_SERVER_LOCK (server);
-	res = g_list_length(server->mappings);
+  old = server->media_mapping;
+  server->media_mapping = mapping;
   GST_HTTP_SERVER_UNLOCK (server);
 
-	return res;
+  if (old)
+    g_object_unref (old);
 }
+
+
+/**
+ * gst_http_server_get_media_mapping:
+ * @server: a #GstHTTPServer
+ *
+ * Get the #GstHTTPMediaMapping used as the media mapping of @server.
+ *
+ * Returns: the #GstHTTPMediaMapping of @server. g_object_unref() after
+ * usage.
+ */
+GstHTTPMediaMapping *
+gst_http_server_get_media_mapping (GstHTTPServer * server)
+{
+  GstHTTPMediaMapping *result;
+
+  g_return_val_if_fail (GST_IS_HTTP_SERVER (server), NULL);
+
+  GST_HTTP_SERVER_LOCK (server);
+  if ((result = server->media_mapping))
+    g_object_ref (result);
+  GST_HTTP_SERVER_UNLOCK (server);
+
+  return result;
+}
+
 
 static void
 gst_http_server_get_property (GObject * object, guint propid,
@@ -402,6 +445,9 @@ gst_http_server_get_property (GObject * object, guint propid,
       break;
     case PROP_BACKLOG:
       g_value_set_int (value, gst_http_server_get_backlog (server));
+      break;
+    case PROP_MEDIA_MAPPING:
+      g_value_take_object (value, gst_http_server_get_media_mapping (server));
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, propid, pspec);
@@ -426,6 +472,9 @@ gst_http_server_set_property (GObject * object, guint propid,
       break;
     case PROP_BACKLOG:
       gst_http_server_set_backlog (server, g_value_get_int (value));
+      break;
+    case PROP_MEDIA_MAPPING:
+      gst_http_server_set_media_mapping (server, g_value_get_object (value));
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, propid, pspec);
@@ -591,25 +640,9 @@ close_error:
 static void
 unmanage_client (GstHTTPClient * client, GstHTTPServer * server)
 {
-	MediaMapping *mapping = client->mapping;
-
 	GST_DEBUG_OBJECT (server, "unmanage client %p", client);
 
 	gst_http_client_set_server (client, NULL);
-
-	// remove client from mapping list
-	if (mapping) {
-		int remaining_clients;
-
-		GST_HTTP_MAPPING_LOCK(server);
-		mapping->clients = g_list_remove(mapping->clients, client);
-		remaining_clients = g_list_length(mapping->clients); 
-		GST_HTTP_MAPPING_UNLOCK(server);
-
-		if (remaining_clients == 0) {
-			gst_http_server_stop_media(server, mapping);
-		}
-	}
 
 	GST_HTTP_SERVER_LOCK (server);
 	server->clients = g_list_remove (server->clients, client);
@@ -636,12 +669,16 @@ manage_client (GstHTTPServer * server, GstHTTPClient * client)
 static GstHTTPClient *
 default_create_client (GstHTTPServer * server)
 {
-  GstHTTPClient *client;
+	GstHTTPClient *client;
 
-  /* a new client connected, create a session to handle the client. */
-  client = gst_http_client_new ();
+	/* a new client connected, create a session to handle the client. */
+	GST_HTTP_SERVER_LOCK (server);
+	client = gst_http_client_new ();
+	/* set the media mapping that this client should use */
+	gst_http_client_set_media_mapping (client, server->media_mapping);
+	GST_HTTP_SERVER_UNLOCK (server);
 
-  return client;
+	return client;
 }
 
 /* default method for creating a new client object in the server to accept and
@@ -725,8 +762,8 @@ accept_failed:
 static void
 server_watch_destroyed (GstHTTPServer * server)
 {
-  GST_DEBUG_OBJECT (server, "source destroyed");
-  g_object_unref (server);
+	GST_DEBUG_OBJECT (server, "source destroyed");
+	g_object_unref (server);
 }
 
 /**
@@ -793,17 +830,15 @@ guint
 gst_http_server_attach (GstHTTPServer * server, GMainContext * context)
 {
   guint res;
-  GSource *source;
 
   g_return_val_if_fail (GST_IS_HTTP_SERVER (server), 0);
 
-  source = gst_http_server_create_watch (server);
-  if (source == NULL)
+  server->source = gst_http_server_create_watch (server);
+  if (server->source == NULL)
     goto no_source;
 
-  res = g_source_attach (source, context);
-  g_source_unref (source);
-server->source = source;
+  res = g_source_attach (server->source, context);
+  g_source_unref (server->source);
 
   return res;
 
@@ -813,403 +848,4 @@ no_source:
     GST_ERROR_OBJECT (server, "failed to create watch");
     return 0;
   }
-}
-
-/**
- * gst_http_server_add_mapping_pipe:
- * @server: a #GstHTTPServer
- * @path: a string describing the URL path 
- * @pipeline: a string describing a Gstreamer pipeline (see gst-launch)
- * @desc: a text description of the stream
- *
- * Add a media mapping to the server.  A Pipeline should generate JPEG
- * frames. 
- *
- */
-MediaMapping *
-gst_http_server_add_mapping_pipe( GstHTTPServer *server, const gchar *path,
-  const gchar *desc, const gchar *pipeline)
-{
-	MediaMapping *mapping;
-	gchar **elems;
-
-	GST_INFO ("Adding '%s' '%s' '%s'", path, desc, pipeline);
-
-	mapping = (MediaMapping *) malloc(sizeof(*mapping));
-	memset(mapping, 0, sizeof(*mapping));
-	if (path[0] != '/')
-		mapping->path = g_strconcat("/", path, NULL);
-	else
-		mapping->path = g_strdup(path);
-	mapping->desc = g_strdup(desc);
-	mapping->pipeline_desc = g_strdup(pipeline);
-	mapping->lock = g_mutex_new ();
-	mapping->mimetype = g_strdup("multipart/x-mixed-replace");
-	//mapping->mimetype = g_strdup("image/jpeg");
-	mapping->server = server;
-	elems = g_strsplit(pipeline, "!", 0);
-	if (elems[0] && strstr(elems[0], "v4l2src")) {
-		char *p = strstr(elems[0], "device=");
-		if (p) {
-			mapping->v4l2srcdev = g_strstrip(g_strdup(p + 7));
-		} else {
-			mapping->v4l2srcdev = "/dev/video0";
-		}
-	}
-	g_strfreev(elems);
-
-	GST_HTTP_SERVER_LOCK (server);
-	server->mappings = g_list_append(server->mappings, (gpointer) mapping);
-	GST_HTTP_SERVER_UNLOCK (server);
-
-	return mapping;
-}
-
-/**
- * gst_http_server_add_mapping_func:
- * @server: a #GstHTTPServer
- * @path: a string describing the URL path 
- * @func: The callback function to call
- * @data: Data to pass to the callback
- *
- * Add a function mapping to the server
- */
-MediaMapping *
-gst_http_server_add_mapping_func( GstHTTPServer *server, const gchar *path,
-	const gchar *desc, MappingFunc func, gpointer data)
-{
-	MediaMapping *mapping;
-
-	GST_INFO ("Adding '%s' '%s'", path, desc);
-
-	mapping = (MediaMapping *) malloc(sizeof(*mapping));
-	memset(mapping, 0, sizeof(*mapping));
-	if (path[0] != '/')
-		mapping->path = g_strconcat("/", path, NULL);
-	else
-		mapping->path = g_strdup(path);
-	mapping->desc = g_strdup(desc);
-	mapping->lock = g_mutex_new ();
-	mapping->server = server;
-	mapping->func = func;
-	mapping->data = data;
-
-	GST_HTTP_SERVER_LOCK (server);
-	server->mappings = g_list_append(server->mappings, (gpointer) mapping);
-	GST_HTTP_SERVER_UNLOCK (server);
-
-	return mapping;
-}
-
-void
-gst_http_server_remove_mapping( GstHTTPServer *server, MediaMapping *mapping)
-{
-	GST_INFO ("Removing mapping for %s", mapping->path);
-
-	GST_HTTP_SERVER_LOCK (server);
-	server->mappings = g_list_remove(server->mappings, (gpointer) mapping);
-	GST_HTTP_SERVER_UNLOCK (server);
-
-	// TODO: make MediaMapping a glib object and do this in its finalize
-	gst_http_server_stop_media(server, mapping);
-	g_free(mapping->path);
-	g_free(mapping->desc);
-	g_free(mapping->pipeline_desc);
-	g_free(mapping->v4l2srcdev);
-	g_free(mapping->mimetype);
-	g_free(mapping->capture);
-	g_mutex_free (mapping->lock);
-	free(mapping);
-}
-
-/**
- * gst_http_server_get_mapping:
- * @server: a #GstHTTPServer
- * @path: a string describing the URL path 
- *
- * Find a media mapping for a given URL path
- *
- * Returns MediaMapping
- *
- */
-MediaMapping*
-gst_http_server_get_mapping(GstHTTPServer *server, const gchar *path)
-{
-	MediaMapping *res = NULL;
-	int i;
-
-	GST_HTTP_SERVER_LOCK (server);
-	for (i = 0; !res && i < g_list_length(server->mappings); i++) {
-		MediaMapping *mapping = g_list_nth_data(server->mappings, i);
-
-		if (strcmp(path, mapping->path) == 0) {
-			res = mapping; 
-		}
-
-		else if (strchr(mapping->path, '*')) {
-			int l = strchr(mapping->path, '*') - mapping->path;
-
-			if (strncmp(path, mapping->path, l) == 0) {
-//printf("'%s' matched '%s'\n", path, mapping->path);
-				res = mapping; 
-			}
-		}
-	}
-	GST_HTTP_SERVER_UNLOCK (server);
-
-	return res;
-}
-
-
-/** gst_bus_callback - called when a message appears on the bus
- * @param bus
- * @param message
- * @param data - media mapping pointer
- */
-static gboolean
-gst_bus_callback (GstBus *bus, GstMessage *message, gpointer data)
-{
-	MediaMapping *mapping = (MediaMapping *) data;
-
-	GST_DEBUG_OBJECT(mapping->server, "Got %s message",
-		GST_MESSAGE_TYPE_NAME (message));
-
-	switch (GST_MESSAGE_TYPE (message)) {
-		case GST_MESSAGE_ERROR: {
-			GError *err;
-			gchar *debug;
-			int i;
-
-			gst_message_parse_error (message, &err, &debug);
-			GST_ERROR ("Pipeline Error for %s: %s",
-				mapping->path, err->message);
-
-			GST_HTTP_MAPPING_LOCK (mapping);
-			for (i = 0; i < g_list_length(mapping->clients); i++)
-			{
-				GstHTTPClient *client = g_list_nth_data(mapping->clients, i);
-				gst_http_client_writeln(client, "Stream Error: %s", err->message);
-			}
-			GST_HTTP_MAPPING_UNLOCK (mapping);
-			g_error_free (err);
-			g_free (debug);
-
-			gst_http_server_stop_media(mapping->server, mapping);
-		}	break;
-
-		case GST_MESSAGE_STATE_CHANGED: {
-			GstState old, new;
-
-			gst_message_parse_state_changed(message, &old, &new, NULL);
-			GST_DEBUG("Element %s changed state from %s to %s",
-				GST_OBJECT_NAME(message->src),
-				gst_element_state_get_name(old),
-				gst_element_state_get_name(new));
-		}	break;
-
-		default:
-			break;
-	}
-}
-
-
-/** gst_buffer_available - callback when frame buffer available to sink
- * @param elt - target element
- * @param mapping - media mapping
- *
- * Called when the Media has a frame available for the clients
- */
-static void
-gst_buffer_available(GstElement *elt, MediaMapping *mapping)
-{
-	int i, rc;
-	guint size;
-	gpointer raw_buffer;
-	GstBuffer *app_buffer, *buffer;
-	GstElement *source;
-
-	/* get the buffer from appsink */
-	buffer = gst_app_sink_pull_buffer (GST_APP_SINK (elt));
-	GST_DEBUG ("%s frame available: %d bytes\n", mapping->path, buffer->size);
-
-	/* get width/height of stream */
-	if (0 == mapping->width) {
-		GstCaps *caps = gst_buffer_get_caps(buffer);
-		const GstStructure *str = gst_caps_get_structure (caps, 0);
-		if (!gst_structure_get_int (str, "width", &mapping->width) ||
-		    !gst_structure_get_int (str, "height", &mapping->height)) {
-			GST_ERROR("No width/height available");
-		}
-		GST_INFO("The video size of this set of capabilities is %dx%d",
-			mapping->width, mapping->height);
-	}
-
-	/* push buffer to clients*/
-	GST_HTTP_MAPPING_LOCK (mapping);
-	for (i = 0; i < g_list_length(mapping->clients); i++) {
-		GstHTTPClient *c = g_list_nth_data(mapping->clients, i);
-
-		if (strcmp(mapping->mimetype, "multipart/x-mixed-replace") == 0)
-		{
-			gst_http_client_writeln(c, "");
-			gst_http_client_writeln(c, "--%s", MULTIPART_BOUNDARY);
-			gst_http_client_writeln(c, "Content-Type: image/jpeg");
-			gst_http_client_writeln(c, "Content-Length: %d", buffer->size);
-			gst_http_client_writeln(c, "");
-		}
-		if (strcmp(mapping->mimetype, "image/jpeg") == 0)
-		{
-			gst_http_client_writeln(c, "Content-Length: %d", buffer->size);
-			gst_http_client_writeln(c, "");
-		}
-
-		c->ewma_framesize = c->ewma_framesize ?
-				(((c->ewma_framesize * (2 /*weight*/ - 1)) +
-					(buffer->size * 1 /*factor*/)) / 2 /*weight*/) :
-				(buffer->size * 1 /*factor*/);
-//		c->ewma_framesize += (-c->ewma_framesize + buffer->size) >> 4;
-		avg_add_samples(&c->avg_frames, 1);
-		avg_add_samples(&c->avg_bytes, buffer->size);
-//GST_DEBUG ("%s frame available: %d bytes (avg=%ld fps=%ld)\n", mapping->path, buffer->size, c->ewma_framesize, c->avg_frames.avg);
-		if (mapping->capture)
-		{
-			gchar *fname = g_strdup_printf(mapping->capture,
-				c->avg_frames.total);
-			g_file_set_contents(fname, buffer->data, buffer->size,
-				NULL);
-			g_free(fname);
-		}
-		rc = write (c->sock, buffer->data, buffer->size);	
-
-		// if we are serving just an image, close the socket
-		if (strcmp(mapping->mimetype, "image/jpeg") == 0) {
-// crashes on close stream
-//printf("\n\nClosing client\n");
-			//close(c->sock);
-			// set pipeline to playing state
-			// can't do this while lock
-			//gst_element_set_state (mapping->pipeline, GST_STATE_NULL);
-		}
-	}
-	GST_HTTP_MAPPING_UNLOCK (mapping);
-
-	/* we don't need the buffer anymore */
-	gst_buffer_unref(buffer);
-}
-
-/**
- * gst_http_server_play_media:
- * @server: a #GstHTTPServer
- * @mapping: Media to play
- * @client: Client to stream to
- 
- * Launch the gstreamer pipeline
- *
- * Returns error code (0 = success) 
- *
- */
-int
-gst_http_server_play_media(GstHTTPServer *server, MediaMapping *mapping,
-	GstHTTPClient *client)
-{
-	GstElement *pipeline, *sink;
-	GstBus *bus;
-	gchar *desc;
-	GError *err = NULL;
-	struct data* pdata = NULL;
-
-	if (!mapping->pipeline) {
-		GST_INFO ("Creating new multipart/jpeg pipeline for '%s'",
-			mapping->path);
-
-		// setup pipeline with multipartmux and appsink
-		//desc = g_strdup_printf("%s ! multipartmux boundary=\"%s\" ! appsink name=sink", mapping->pipeline_desc, mapping->boundary);
-		desc = g_strdup_printf("%s ! appsink name=sink", mapping->pipeline_desc);
-		GST_DEBUG ("launching pipeline '%s'", desc);
-		if (!(pipeline = gst_parse_launch(desc, &err))) {
-			GST_ERROR ("Failed to create pipeline from '%s':%s",
-				desc, err->message);
-			return 1;
-		}
-		mapping->pipeline = pipeline;
-
-		// add bus callback
-		bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
-		gst_bus_add_watch(bus, gst_bus_callback, mapping);
-		gst_object_unref(bus);
-	
-		// attach signal to sink
-		sink = gst_bin_get_by_name (GST_BIN(pipeline), "sink");
-		//g_object_set (G_OBJECT (sink), "emit-signals", TRUE, "sync", FALSE, NULL);
-		g_object_set (G_OBJECT (sink), "emit-signals", TRUE, FALSE, NULL);
-		g_signal_connect (sink, "new-buffer",
-			G_CALLBACK(gst_buffer_available), mapping);
-		gst_object_unref(sink);
-
-		// set pipeline to playing state
-		gst_element_set_state (pipeline, GST_STATE_PLAYING);
-	
-		g_free(desc);
-	}
-
-	else {
-		GST_INFO ("%s: Adding client to pipeline serving %d clients",
-			mapping->path, g_list_length(mapping->clients));
-	}
-
-	// add client to client list of mapping
-	GST_HTTP_MAPPING_LOCK (mapping);
-	mapping->clients = g_list_append(mapping->clients, client);
-	GST_HTTP_MAPPING_UNLOCK (mapping);
-
-	return 0;
-}
-
-/**
- * gst_http_server_stop_media:
- * @server: a #GstHTTPServer
- * @mapping: Media to stop
- 
- * Stop the gstreamer pipeline
- *
- * Returns error code (0 = success) 
- *
- */
-gint
-gst_http_server_stop_media (GstHTTPServer *server, MediaMapping *mapping)
-{
-	int i;
-
-	if (!mapping->pipeline) {
-		return 0;
-	}
-
-	GST_INFO ("stopping stream for %s (%d clients)",
-		mapping->path, g_list_length(mapping->clients));
-
-	// set pipeline to NULL state
-	gst_element_set_state (mapping->pipeline, GST_STATE_NULL);
-
-	// close all clients being served this stream
-	// (they will get removed/destroyed when closed)
-	// we can not call gst_http_client_close as that will
-	// synchrnously unmanage clients and hang as we have mapping lock
-	GST_HTTP_MAPPING_LOCK (mapping);
-	while (g_list_length(mapping->clients))
-	{
-		GstHTTPClient *client = g_list_nth_data(mapping->clients, 0);
-		gst_http_client_close(client, 3);
-		mapping->clients = g_list_remove(mapping->clients, client);
-
-		GST_HTTP_SERVER_LOCK (server);
-		server->clients = g_list_remove (server->clients, client);
-		GST_DEBUG_OBJECT (server, "now managing %d clients", g_list_length(server->clients));
-		GST_HTTP_SERVER_UNLOCK (server);
-		g_object_unref (client);
-	}
-	g_object_unref (mapping->pipeline);
-	mapping->pipeline = NULL;
-	GST_HTTP_MAPPING_UNLOCK (mapping);
-
-	return 0;
 }

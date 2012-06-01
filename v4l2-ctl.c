@@ -25,6 +25,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <ctype.h>
 #include <sys/ioctl.h>
 
 #include <linux/videodev2.h>
@@ -84,7 +85,7 @@ v4l2_control_name_str(struct v4l2_queryctrl *q)
 	static char name[32];
 	int i;
 
-	strncpy(name, q->name, sizeof(name));
+	strncpy(name, (const char*) q->name, sizeof(name));
 	for (i = 0; name[i]; i++) {
 		if (isalnum(name[i])) {
 			name[i] = tolower(name[i]);
@@ -105,8 +106,6 @@ static int
 find_control(int fd, const char *name)
 {
 	struct v4l2_queryctrl queryctrl;
-	struct v4l2_querymenu querymenu;
-	int i = 0;
 
 	memset (&queryctrl, 0, sizeof (queryctrl));
 	for (queryctrl.id = V4L2_CID_BASE;
@@ -114,7 +113,7 @@ find_control(int fd, const char *name)
 			queryctrl.id++)
 	{
 		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
-			if ( (strcmp(name, queryctrl.name) == 0)
+			if ( (strcmp(name, (const char*) queryctrl.name) == 0)
 		    || (strcmp(name, v4l2_control_name_str(&queryctrl)) == 0) )
 			{
 				return queryctrl.id;
@@ -131,7 +130,7 @@ find_control(int fd, const char *name)
 			queryctrl.id++)
 	{
 		if (0 == ioctl (fd, VIDIOC_QUERYCTRL, &queryctrl)) {
-			if ( (strcmp(name, queryctrl.name) == 0)
+			if ( (strcmp(name, (const char *)queryctrl.name) == 0)
 		    || (strcmp(name, v4l2_control_name_str(&queryctrl)) == 0) )
 			{
 				return queryctrl.id;
@@ -189,7 +188,6 @@ enumerate_menu (int fd, struct v4l2_queryctrl *q, GstHTTPClient *c)
 static void
 v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 {
-	long val;
 	struct v4l2_control control;
 
 	if (q->flags & V4L2_CTRL_FLAG_DISABLED)
@@ -240,12 +238,10 @@ static void
 enumerate_controls(int fd, GstHTTPClient *c)
 {
 	struct v4l2_queryctrl queryctrl;
-	struct v4l2_querymenu querymenu;
 	int i = 0;
 
 	WRITELN(c, "no-cache");
-	WRITELN(c, "Content-Type: application/json");
-	WRITELN(c, "");
+	WRITELN(c, "Content-Type: application/json\r\n");
 
 	WRITELN(c, "{");
 	WRITELN(c, "  \"controls\": [");
@@ -358,7 +354,7 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 	fd = open (dev, O_RDWR | O_NONBLOCK, 0);
 	if (-1 == fd) {
 		fprintf(stderr, "open '%s' failed: %s (%d)", dev, strerror(errno), errno);
-		gst_http_client_writeln(client, "404 Not Found");
+		WRITELN(client, "404 Not Found");
 		g_free(dev);
 		return TRUE;
 	}
@@ -375,8 +371,7 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 			if (set_control(fd, i, NULL))
 				break;
 
-		gst_http_client_writeln(client, "200 Ok");
-		WRITELN(client, "");
+		WRITELN(client, "200 Ok\r\n");
 		WRITELN(client, "Reset controls");
 		goto out;
 	}
@@ -384,7 +379,7 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 	if (url->querys) {
 		struct v4l2_queryctrl queryctrl;
 		struct v4l2_control ctrl;
-		char *p, *name, *value;
+		char *name, *value;
 		int i;
 		unsigned char header_sent = 0;
 
@@ -399,7 +394,7 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 				if (ioctl(fd, VIDIOC_QUERYCTRL, &queryctrl)) {
 					perror("VIDIOC_QUERYCTRL");
 				} else
-					name = queryctrl.name;
+					name = (char *)queryctrl.name;
 			} else if ((queryctrl.id = find_control(fd, name)) == -1)
 				continue;
 
@@ -411,15 +406,13 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 			if (ioctl(fd, VIDIOC_S_CTRL, &ctrl)) {
 				perror("VIDIOC_S_CTRL");
 				if (header_sent++ == 0) {
-					gst_http_client_writeln(client, "500 Error");
-					WRITELN(client, "");
+					WRITELN(client, "500 Error\r\n");
 				}
 				WRITELN(client, "Failed setting %s (0x%x) to %d",
 					name, ctrl.id, ctrl.value);
 			} else {
 				if (header_sent++ == 0) {
-					gst_http_client_writeln(client, "200 Ok");
-					WRITELN(client, "");
+					WRITELN(client, "200 Ok\r\n");
 				}
 				WRITELN(client, "%s (0x%x) set to %d",
 					name, ctrl.id, ctrl.value);
@@ -434,11 +427,5 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 out:
 	close(fd);
 	g_free(dev);
-	return TRUE;
-
-err:
-	close(fd);
-	g_free(dev);
-	gst_http_client_writeln(client, "404 Not Found");
 	return TRUE;
 }

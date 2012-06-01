@@ -32,10 +32,12 @@
 #include <arpa/inet.h>
 #include <sys/ioctl.h>
 #include <stdarg.h>
+#include <ctype.h>
 
 #include "http-client.h"
 #include "http-server.h"
 #include "media-mapping.h"
+#include "media.h"
 
 enum
 {
@@ -54,6 +56,13 @@ static void gst_http_client_set_property (GObject * object, guint propid,
     const GValue * value, GParamSpec * pspec);
 static void gst_http_client_finalize (GObject * obj);
 
+enum
+{ 
+  PROP_0,
+  PROP_MEDIA_MAPPING,
+
+  PROP_LAST
+};
 
 G_DEFINE_TYPE (GstHTTPClient, gst_http_client, G_TYPE_OBJECT);
 
@@ -68,6 +77,12 @@ gst_http_client_class_init (GstHTTPClientClass * klass)
   gobject_class->set_property = gst_http_client_set_property;
   gobject_class->finalize = gst_http_client_finalize;
 
+	g_object_class_install_property (gobject_class, PROP_MEDIA_MAPPING,
+			g_param_spec_object ("media-mapping", "Media Mapping",
+					"The media mapping to use for client session",
+					GST_TYPE_HTTP_MEDIA_MAPPING,
+					G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   gst_http_client_signals[SIGNAL_CLOSED] =
   g_signal_new ("closed", G_TYPE_FROM_CLASS (klass), G_SIGNAL_RUN_LAST,
   G_STRUCT_OFFSET (GstHTTPClientClass, closed), NULL, NULL,
@@ -79,6 +94,9 @@ gst_http_client_class_init (GstHTTPClientClass * klass)
 static void
 gst_http_client_init (GstHTTPClient * client)
 {
+	memset(&client->avg_frames, 0, sizeof(client->avg_frames));	
+	memset(&client->avg_bytes, 0, sizeof(client->avg_bytes));	
+	GST_DEBUG_OBJECT (client, "create client %p", client);
 }
 
 /* A client is finalized when the connection is broken */
@@ -88,14 +106,23 @@ gst_http_client_finalize (GObject * obj)
 	GstHTTPClient *client = GST_HTTP_CLIENT (obj);
 
 	GST_DEBUG_OBJECT (client, "finalize client %p", client);
-	close(client->sock);
+	if (client->sock != -1)
+		close(client->sock);
+
+	if (client->media_mapping)
+		g_object_unref (client->media_mapping);
 
 	g_free (client->peer_ip);
 	g_free (client->serv_ip);
-	g_strfreev (client->headers);
-	g_source_unref(client->watch);
-	g_source_destroy(client->watch);
-//	g_object_unref (client->server); // we don't ref it
+	if (client->headers)
+		g_strfreev (client->headers);
+	if (client->watch) {
+		g_source_unref(client->watch);
+		g_source_destroy(client->watch);
+	}
+	if (client->server) {
+		g_object_unref (client->server);
+	}
 
 	G_OBJECT_CLASS (gst_http_client_parent_class)->finalize (obj);
 }
@@ -107,6 +134,9 @@ gst_http_client_get_property (GObject * object, guint propid,
   GstHTTPClient *client = GST_HTTP_CLIENT (object);
 
   switch (propid) {
+		case PROP_MEDIA_MAPPING:
+			g_value_take_object (value, gst_http_client_get_media_mapping (client));
+			break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, propid, pspec);
   }
@@ -119,6 +149,9 @@ gst_http_client_set_property (GObject * object, guint propid,
   GstHTTPClient *client = GST_HTTP_CLIENT (object);
 
   switch (propid) {
+		case PROP_MEDIA_MAPPING:
+			gst_http_client_set_media_mapping (client, g_value_get_object (value));
+			break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, propid, pspec);
   }
@@ -182,6 +215,51 @@ gst_http_client_get_server (GstHTTPClient * client)
   return result;
 }
 
+/**
+ * gst_http_client_set_media_mapping:
+ * @client: a #GstHTTPClient
+ * @mapping: a #GstHTTPMediaMapping
+ *
+ * Set @mapping as the media mapping for @client which it will use to map urls
+ * to media streams. These mapping is usually inherited from the server that
+ * created the client but can be overriden later.
+ */
+void
+gst_http_client_set_media_mapping (GstHTTPClient * client,
+    GstHTTPMediaMapping * mapping)
+{
+  GstHTTPMediaMapping *old;
+
+  old = client->media_mapping;
+
+  if (old != mapping) {
+    if (mapping)
+      g_object_ref (mapping);
+    client->media_mapping = mapping;
+    if (old)
+      g_object_unref (old);
+  }
+}
+
+/**
+ * gst_http_client_get_media_mapping:
+ * @client: a #GstHTTPClient
+ *
+ * Get the #GstHTTPMediaMapping object that @client uses to manage its sessions.
+ *
+ * Returns: a #GstHTTPMediaMapping, unref after usage.
+ */
+GstHTTPMediaMapping *
+gst_http_client_get_media_mapping (GstHTTPClient * client)
+{
+  GstHTTPMediaMapping *result;
+
+  if ((result = client->media_mapping))
+    g_object_ref (result);
+
+  return result;
+}
+
 gint
 gst_http_client_write(GstHTTPClient *client, const char* fmt, ...)
 {
@@ -203,27 +281,22 @@ gst_http_client_writeln(GstHTTPClient *client, const char* fmt, ...)
 
 	va_start(args, fmt);
 	ret = vdprintf(client->sock, fmt, args);
-	ret += write(client->sock, "\r\n", 2);
 	va_end(args);
+	ret += write(client->sock, "\r\n", 2);
 
 	return ret;
 }
 
 void
-gst_http_client_close(GstHTTPClient *client, int code)
+gst_http_client_close(GstHTTPClient *client, const char *msg)
 {
-	GST_DEBUG_OBJECT (client, "client %s:%d finished:%d",
-		client->peer_ip, client->port, code);
+	GST_DEBUG_OBJECT (client, "client %s:%d finished:%s",
+		client->peer_ip, client->port, msg);
 
 	close(client->sock);
-//	g_signal_emit (client, gst_http_client_signals[SIGNAL_CLOSED], 0, NULL);
-}
 
-static void
-_gst_http_client_close(GstHTTPClient *client, int code)
-{
-	gst_http_client_close(client, code);
-	g_signal_emit (client, gst_http_client_signals[SIGNAL_CLOSED], 0, NULL);
+	if (client->media)
+		gst_http_media_stop (client->media, client);
 }
 
 /* parse string to next space/CR/null */
@@ -248,34 +321,21 @@ client_header(GstHTTPClient *client)
 	g_free(name);
 }
 
-gchar *
-get_query_field(MediaURL *url, const char *name)
-{
-	if (url && url->querys) {
-		int i;
 
-		for (i = 0; url->querys[i]; i++) {
-			if (strncasecmp(name, url->querys[i], strlen(name)) == 0) {
-				char *val = strstr(url->querys[i], "=");
-				if (val)
-					return g_strdup(val+1);
-			}
-		}
-	}
-
-	return NULL;
-}
-
+/** create a MediaURL by parsing a string
+ *  (will modify the passed string)
+ */
 static MediaURL *
 create_url(char *str)
 {
-	char *http, *method, *page, *query = NULL, *p;
+	char *method, *page, *query = NULL, *p;
+	//char *http;
 	p = str;
 	MediaURL *url = NULL;
 
 	method = parse_string(&p);
 	page = parse_string(&p);
-	http = parse_string(&p);
+	//http = parse_string(&p);
 	if (method && page) {
 		p = page;
 		while (*p && *p != '?') p++;
@@ -300,9 +360,8 @@ create_url(char *str)
 static gboolean
 handle_request(GstHTTPClient *client)
 {
-	GstHTTPServer *server = client->server;
 	char header[4096];
-	int bytes, i;
+	int bytes;
 	MediaURL *url = NULL;
 
 	header[0] = 0;
@@ -312,28 +371,27 @@ handle_request(GstHTTPClient *client)
 	if (bytes < 0) {
 		GST_ERROR("read error %d from %s:%d:%d:%p\n", bytes,
 			client->peer_ip, client->port, client->sock, client);
-		_gst_http_client_close(client, -1);
+		gst_http_client_close(client, "read error");
 		return FALSE;
 	}
 	// this happens when client closes their end
 	if (bytes == 0) {
-		_gst_http_client_close(client, -2);
+		gst_http_client_close(client, "remote end closed");
 		return FALSE;
 	}
 	client->headers = g_strsplit(header, "\r\n", 0);
 	if (*client->headers) {
-		url = create_url(client->headers[0]);
+		url = create_url(header);
 		GST_INFO ("client=%s:%d path='%s' query='%s'", client->peer_ip,
 			client->port, url->path, url->query);
 
 		if (strcmp(url->method, "GET") == 0) {
-			client->mapping = gst_http_server_get_mapping(server,
-				url->path);
+			client->media = gst_http_media_mapping_find(client->media_mapping, url->path);
 		}
 	}
 
-	if (client->mapping) {
-		MediaMapping *m = client->mapping;
+	if (client->media) {
+		GstHTTPMedia *m = client->media;
 
 		if (m->pipeline_desc) {
 			char rfc1123[64];
@@ -357,19 +415,19 @@ handle_request(GstHTTPClient *client)
 */
 			if (strcmp(m->mimetype, "image/jpeg") == 0) {
 				gst_http_client_writeln(client, "Content-Type: %s", m->mimetype);
-				gst_http_client_writeln(client, "");
+				gst_http_client_write(client, "\r\n");
 			}
 			else if (strcmp(m->mimetype, "multipart/x-mixed-replace") == 0)
 			{
 				gst_http_client_writeln(client, "Content-Type: %s;boundary=%s",
 					m->mimetype, MULTIPART_BOUNDARY);
 				gst_http_client_writeln(client, "Expires: %s", rfc1123);
-				gst_http_client_writeln(client, "");
+				gst_http_client_write(client, "\r\n");
 			}
 
-			if (gst_http_server_play_media(server, m, client)) {
+			if (gst_http_media_play (m, client)) {
 				gst_http_client_writeln(client, "415 Unsupported Media Type");
-				_gst_http_client_close(client, 1);
+				gst_http_client_close(client, "unsupported");
 			}
 
 			goto out;
@@ -378,15 +436,16 @@ handle_request(GstHTTPClient *client)
 		else if (m->func) {
 			GST_DEBUG_OBJECT(client, "got function mapping");
 			client_header(client);
-			if (client->mapping->func(url, client, client->mapping->data))
-				_gst_http_client_close(client, 0);
+			if (m->func(url, client, m->data)) {
+				gst_http_client_close(client, "complete");
+			}
 
 			goto out;
 		}
 	}
 
 	gst_http_client_writeln(client, "404 Not Found");
-	_gst_http_client_close(client, 1);
+	gst_http_client_close(client, "not found");
 
 out:
 	if (url) {
@@ -431,8 +490,10 @@ gst_http_client_io_func (GIOChannel *source,
 static void
 client_watch_destroyed (GstHTTPClient * client)
 {
-	GST_DEBUG_OBJECT (client, "source destroyed for %s:%p (%d)", client->peer_ip,
+	GST_DEBUG_OBJECT (client, "source destroyed for %s:%d (%d)", client->peer_ip,
 		client->port, client->sock);
+	client->watch = NULL;
+	g_signal_emit (client, gst_http_client_signals[SIGNAL_CLOSED], 0, NULL);
 	g_object_unref (client);
 }
 
@@ -531,17 +592,5 @@ gst_http_client_accept (GstHTTPClient * client, GIOChannel * channel)
 			(GDestroyNotify) client_watch_destroyed);
 
 	return TRUE;
-
-	/* ERRORS */
-getpeername_failed:
-	{
-		GST_ERROR ("getpeername failed: %s", g_strerror (errno));
-		return FALSE;
-	}
-getnameinfo_failed:
-	{
-		GST_ERROR ("getnameinfo failed: %s", g_strerror (errno));
-		return FALSE;
-	}
 }
 

@@ -29,6 +29,7 @@ typedef struct _GstHTTPClientClass GstHTTPClientClass;
 
 #include "http-server.h"
 #include "media-mapping.h"
+#include "media.h"
 #include "rate.h"
 
 #define GST_TYPE_HTTP_CLIENT              (gst_http_client_get_type ())
@@ -66,7 +67,9 @@ struct _GstHTTPClient {
 	int            sock;
 	guint          port;
 	gchar         **headers;
-	MediaMapping  *mapping;
+	GstHTTPMediaMapping  *media_mapping;
+	GstHTTPMedia  *media;
+
 	/* counters */
 	struct avg avg_frames;
 	struct avg avg_bytes;
@@ -88,13 +91,16 @@ GstHTTPServer *gst_http_client_get_server(GstHTTPClient *client);
 gboolean       gst_http_client_accept    (GstHTTPClient *client,
                                           GIOChannel *channel);
 void           gst_http_client_close     (GstHTTPClient *client,
-                                          int code);
+                                          const char *msg);
 gint           gst_http_client_write     (GstHTTPClient *client,
                                           const char *fmt, ...)
                                           __attribute__ ((format(printf,2,3))); 
 gint           gst_http_client_writeln   (GstHTTPClient *client,
                                           const char *fmt, ...)
                                           __attribute__ ((format(printf,2,3))); 
+void           gst_http_client_set_media_mapping (GstHTTPClient *client,
+                                                  GstHTTPMediaMapping *mapping);
+GstHTTPMediaMapping * gst_http_client_get_media_mapping (GstHTTPClient *client);
 
 G_END_DECLS
 

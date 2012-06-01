@@ -67,7 +67,7 @@ struct _GstHTTPServer {
 	GList       *clients;
 
 	/* media mappings */
-	GList       *mappings;
+	GstHTTPMediaMapping *media_mapping;
 
 	GSource     *source;
 };
@@ -98,21 +98,14 @@ void           gst_http_server_set_backlog        (GstHTTPServer *server, gint b
 gint           gst_http_server_get_backlog        (GstHTTPServer *server);
 void           gst_http_server_set_servername     (GstHTTPServer *server, const gchar *name);
 gchar *        gst_http_server_get_servername     (GstHTTPServer *server);
-MediaMapping*  gst_http_server_add_mapping_pipe   (GstHTTPServer *server,
-                                                   const gchar *path,
-                                                   const gchar *desc,
-                                                   const gchar *pipeline);
-MediaMapping*  gst_http_server_add_mapping_func   (GstHTTPServer *server,
-                                                   const gchar *path,
-                                                   const gchar *desc,
-                                                   MappingFunc func,
-                                                   gpointer data);
-void           gst_http_server_remove_mapping     (GstHTTPServer *server,
-                                                   MediaMapping *mapping);
-gint           gst_http_server_num_mappings       (GstHTTPServer *server);
-MediaMapping*  gst_http_server_get_mapping        (GstHTTPServer *server, const gchar *path);
-gint           gst_http_server_play_media         (GstHTTPServer *server, MediaMapping *, GstHTTPClient *);
-gint           gst_http_server_stop_media         (GstHTTPServer *server, MediaMapping *);
+void           gst_http_server_set_media_mapping        (GstHTTPServer *server,
+                                                         GstHTTPMediaMapping*);
+GstHTTPMediaMapping*  gst_http_server_get_media_mapping (GstHTTPServer *server);
+guint          gst_http_server_attach             (GstHTTPServer * server,
+                                                   GMainContext * context);
+void           gst_http_server_detach             (GstHTTPServer * server);
+
+
 
 
 G_END_DECLS

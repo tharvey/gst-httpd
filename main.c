@@ -26,11 +26,13 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <ctype.h>
 #include <gst/gst.h>
 
 #include "http-server.h"
 #include "http-client.h"
 #include "media-mapping.h"
+#include "media.h"
 #include "v4l2-ctl.h"
 #include "rate.h"
 
@@ -65,7 +67,6 @@ static gboolean
 sysstat_timer(gpointer data)
 {
 	gchar *contents;
-	gchar **lines;
 	static int idx = 0;
 	struct sysstat *s;
 	int i;
@@ -105,6 +106,8 @@ sysstat_timer(gpointer data)
 int
 parse_config(GstHTTPServer *server, const gchar *configfile)
 {
+	GstHTTPMediaMapping *mapping;
+	GstHTTPMedia *media;
 	gchar *contents;
 	char *path = NULL;
 	char *pipe = NULL;
@@ -112,10 +115,10 @@ parse_config(GstHTTPServer *server, const gchar *configfile)
 	int i;
 
 	GST_DEBUG_OBJECT (server, "Parsing %s...\n", configfile);
+	mapping = gst_http_server_get_media_mapping(server);
 	if (g_file_get_contents(configfile, &contents, NULL, NULL)) {
 		char *line;
 		char *p;
-		MediaMapping *m;
 		gchar **lines = g_strsplit(contents, "\n", 0);
 		g_free(contents);
 		for (i = 0; lines[i]; i++) {
@@ -129,10 +132,10 @@ parse_config(GstHTTPServer *server, const gchar *configfile)
 			}
 
 			// options for previous mapping
-			if ((p = strchr(line, ':')) && m) {
+			if ((p = strchr(line, ':')) && media) {
 				*p++ = 0;
 				if (strcmp(line, "capture") == 0) {
-					m->capture = g_strdup(p);
+					media->capture = g_strdup(p);
 				}
 				continue;
 			}
@@ -143,12 +146,15 @@ parse_config(GstHTTPServer *server, const gchar *configfile)
 			if (*pipe) *pipe++ = 0; // terminate path
 			while (*pipe && isspace(*pipe)) pipe++;
 			if (*path && *pipe) {
-				m = gst_http_server_add_mapping_pipe (server, path, desc, pipe);
+				media = gst_http_media_new_pipeline (desc, pipe);
+				gst_http_media_mapping_add (mapping, path, media);
 			}
 			desc = NULL;
 		}
 		g_strfreev(lines);
 	}
+
+	g_object_unref(mapping);
 
 	return 0;
 }
@@ -189,6 +195,7 @@ gboolean
 server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 {
 	GstHTTPServer *server = (GstHTTPServer *) data;
+	GstHTTPMediaMapping *mapping = gst_http_server_get_media_mapping(server);
 	GError *err = NULL;
 	int i, j;
 	gchar *str;
@@ -198,26 +205,25 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 	//WRITELN(client, "Last-Modified: %s", unix2date(time(NULL)));
 	//WRITELN(client, "Expires: %s", timestr);
 	WRITELN(client, "no-cache");
-	WRITELN(client, "Content-Type: application/json");
-	WRITELN(client, "");
+	WRITELN(client, "Content-Type: application/json\r\n");
 
 	GST_HTTP_SERVER_LOCK(server);
 	WRITELN(client, "{");
 	WRITELN(client, "  \"media\": [");
-	for (i = 0, j = 0; i < g_list_length(server->mappings); i++) {
-		MediaMapping *m = g_list_nth_data(server->mappings, i);
+	for (i = 0, j = 0; i < g_list_length(mapping->mappings); i++) {
+		GstHTTPMedia *media = g_list_nth_data(mapping->mappings, i);
 		char *name;
-		if (!m->desc || !m->pipeline_desc)
+		if (!media->desc || !media->pipeline_desc)
 			continue;
- 		name = m->path;
+ 		name = media->path;
 		WRITE(client, (j++ > 0)?",\r\n\t":"\t");
 		if (*name == '/' && (strlen(name) > 1)) name++;
 		WRITELN(client, "{");
 		WRITELN(client, "\t\t\"path\": \"%s\",", name);
-		WRITELN(client, "\t\t\"desc\": \"%s\",", m->desc);
-		WRITELN(client, "\t\t\"width\": \"%d\",", m->width);
-		WRITELN(client, "\t\t\"height\": \"%d\",", m->height);
-		WRITELN(client, "\t\t\"dev\" : \"%s\"", m->v4l2srcdev?m->v4l2srcdev:"");
+		WRITELN(client, "\t\t\"desc\": \"%s\",", media->desc);
+		WRITELN(client, "\t\t\"width\": \"%d\",", media->width);
+		WRITELN(client, "\t\t\"height\": \"%d\",", media->height);
+		WRITELN(client, "\t\t\"dev\" : \"%s\"", media->v4l2srcdev?media->v4l2srcdev:"");
 		WRITE(client, "\t}");
 	}
 	WRITE(client, "\r\n  ]");
@@ -228,11 +234,11 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		GstHTTPClient *c = g_list_nth_data(server->clients, i);
 		if (client == c)
 			continue; // skip ourselves
-		if (c->mapping) {
+		if (c->media) {
 			WRITE(client, (j++ > 0)?",\r\n\t":"\t");
 			WRITELN(client, "{");
-			if (c->mapping->pipeline_desc) {
-				WRITELN(client, "\t\t\"path\": \"%s\",", c->mapping->path);
+			if (c->media->pipeline_desc) {
+				WRITELN(client, "\t\t\"path\": \"%s\",", c->media->path);
 				WRITELN(client, "\t\t\"framesize\": \"%ldK\",",
 					c->ewma_framesize / 1024);
 				WRITELN(client, "\t\t\"bitrate\": \"%2.0fkbps\",",
@@ -255,7 +261,6 @@ if (p_jif && p_prev_jif) {
 	unsigned long total, used, mfree, buffers, cached;
 	unsigned total_diff = (unsigned)(p_jif->total - p_prev_jif->total);
 	static unsigned long sused = 0;
-	static unsigned long spused = 0;
 	if (total_diff == 0) total_diff = 1;
 
 	WRITELN(client, ",");
@@ -266,7 +271,7 @@ if (p_jif && p_prev_jif) {
 	SHOW_STAT(idle); WRITELN(client, ",");
 	SHOW_STAT(io); WRITELN(client, ",");
 	SHOW_STAT(irq); WRITELN(client, ",");
-	SHOW_STAT(sirq); WRITELN(client, "");
+	SHOW_STAT(sirq); WRITELN(client, " ");
 	WRITE(client, "  }");
 
 	WRITELN(client, ",");
@@ -292,7 +297,7 @@ if (p_jif && p_prev_jif) {
 		WRITELN(client, "\t\"free\": \"%luK\",", mfree);
 		WRITELN(client, "\t\"buff\": \"%luK\",", buffers);
 		WRITELN(client, "\t\"cached\": \"%luK\",", cached);
-		WRITELN(client, "\t\"delta\": \"%luK\"", used - sused);
+		WRITELN(client, "\t\"delta\": \"%ldK\"", used - sused);
 	}
 	WRITE(client, "  }");
 
@@ -311,6 +316,8 @@ if (p_jif && p_prev_jif) {
 }
 #endif //#ifdef SYS_STAT
 	WRITELN(client, "\r\n}");
+
+	g_object_unref(mapping);
 
 	return TRUE;
 }
@@ -409,10 +416,9 @@ serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 	GST_INFO("Serving %d byte %s to %s:%d as %s", sb.st_size, physpath,
 		client->peer_ip, client->port, mimetype);
 
-	gst_http_client_writeln(client, "Last-Modified: %s", unix2date(sb.st_mtime));
-	gst_http_client_writeln(client, "Content-Length: %ld", sb.st_size);
-	gst_http_client_writeln(client, "Content-Type: %s", mimetype);
-	gst_http_client_writeln(client, "");
+	WRITELN(client, "Last-Modified: %s", unix2date(sb.st_mtime));
+	WRITELN(client, "Content-Length: %ld", sb.st_size);
+	WRITELN(client, "Content-Type: %s\r\n", mimetype);
 
 	while ( (sz = read(fd, buf, sizeof(buf))) > 0) {
 		write(client->sock, buf, sz);
@@ -425,9 +431,10 @@ serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 	return TRUE;
 
 err:
-	free(physpath);
+	GST_ERROR("404 Not Found: %s", path);
+	if (physpath)
+		free(physpath);
 	g_free(path);
-	gst_http_client_writeln(client, "404 Not Found");
 	return TRUE;
 }
 #endif // #ifdef LOCAL_PAGES
@@ -439,12 +446,14 @@ int
 main (int argc, char *argv[])
 {
 	gchar *address = "0.0.0.0";
-	void *gst_handle = NULL;
 	gchar *service = "8080";
 	gchar *docroot = NULL;
+	char *docrootphys = NULL;
 	gchar *sysadmin = "server.json";
 	gchar *pidfile = NULL;
 	GstHTTPServer *server;
+	GstHTTPMediaMapping *mapping;
+	GstHTTPMedia *media;
 	GError *err = NULL;
 	GOptionContext *ctx;
 	gchar *configfile = NULL;
@@ -487,6 +496,7 @@ main (int argc, char *argv[])
 
 	/* create a server instance */
 	server = gst_http_server_new ();
+	mapping = gst_http_server_get_media_mapping (server);
 	gst_http_server_set_address (server, address);
 	gst_http_server_set_service (server, service);
 
@@ -498,7 +508,8 @@ main (int argc, char *argv[])
 	/* parse commandline arguments */
 	i = 1;
 	while ( (argc - i) >= 2) {
-		gst_http_server_add_mapping_pipe ( server, argv[i], "", argv[i+1]);
+		media = gst_http_media_new_pipeline ("", argv[i+1]);
+		gst_http_media_mapping_add (mapping, argv[i], media);
 		i+=2;
 	}
 
@@ -514,19 +525,21 @@ main (int argc, char *argv[])
 
 	/* add custom URL handlers */
 #ifdef V4L2_CTLS
-	gst_http_server_add_mapping_func ( server, "v4l2cfg.json",
-		"Video Controls", v4l2_config, server);
+	media = gst_http_media_new_handler ("Video Controls", v4l2_config, server);
+	gst_http_media_mapping_add (mapping, "v4l2cfg.json", media);
 #endif
 	if (sysadmin) {
-		gst_http_server_add_mapping_func ( server, sysadmin,
-			"Server Status", server_status, server);
+		media = gst_http_media_new_handler ("Server Status", server_status, server);
+		gst_http_media_mapping_add (mapping, sysadmin, media);
 	}
 #ifdef LOCAL_PAGES
 	/* default to a page handler that serves from docroot */
 	if (docroot) {
-			char *real = realpath(docroot, NULL);
-			if (real) {
-				gst_http_server_add_mapping_func ( server, "*", NULL, serve_page, real);
+			docrootphys = realpath(docroot, NULL);
+			if (docrootphys) {
+				media = gst_http_media_new_handler ("Page Handler", serve_page,
+					docrootphys);
+				gst_http_media_mapping_add (mapping, "*", media);
 			} else {
 				g_print ("Error: docroot '%s' not found\n", docroot);
 			}
@@ -534,11 +547,12 @@ main (int argc, char *argv[])
 #endif // #ifdef LOCAL_PAGES
 
 	/* make sure we have a valid configuration */
-	if (gst_http_server_num_mappings(server) == 0) {
+	if (gst_http_media_mapping_num_mappings(mapping) == 0) {
 		g_print ("Error: no streams defined\n");
 		g_print ("%s\n", g_option_context_get_help(ctx, 0, NULL));
 		return -1;
 	}
+	g_object_unref(mapping);
 	g_option_context_free(ctx);
 
 	/* attach the server to the default maincontext */
@@ -558,6 +572,9 @@ main (int argc, char *argv[])
 	GST_DEBUG("cleaning up...");
 	gst_http_server_detach (server);
 	g_object_unref (server);
+
+	if (docrootphys)
+		free(docrootphys);
 
 	g_main_loop_unref(loop);
 
