@@ -39,6 +39,13 @@
 #define WRITE(x, args...)  gst_http_client_write(x, args)
 #define WRITELN(x, args...)  gst_http_client_writeln(x, args)
 
+/* some private CID's */
+#define V4L2_PRIV_JPEGQUAL 	(V4L2_CID_PRIVATE_BASE+100)
+/* these are really driver dependent but there is no API to query them */
+#define JPEGQUAL_MIN 20
+#define JPEGQUAL_MAX 95
+#define JPEGQUAL_DEF 85
+
 /** v4l2_control_type_str - return a static string describing the control type
  * @param type
  * @returns static string
@@ -143,6 +150,9 @@ find_control(int fd, const char *name)
 		}
 	}
 
+	if (strncmp(name, "jpeg_quality", 12) == 0)
+		return V4L2_PRIV_JPEGQUAL;
+		
 	return -1;
 }
 
@@ -238,6 +248,7 @@ static void
 enumerate_controls(int fd, GstHTTPClient *c)
 {
 	struct v4l2_queryctrl queryctrl;
+	struct v4l2_jpegcompression jc;
 	int i = 0;
 
 	WRITELN(c, "no-cache");
@@ -301,6 +312,21 @@ enumerate_controls(int fd, GstHTTPClient *c)
 		}
 	}
 
+	/* VIDIOC_G_JPEGCOMP */
+	if (0 == ioctl (fd, VIDIOC_G_JPEGCOMP, &jc)) {
+		WRITE(c, (i++ > 0)?",\r\n\t":"\t");
+		WRITELN(c, "{");
+		WRITELN(c, "\t\t\"name\" : \"%s\",", "jpeg_quality");
+		WRITELN(c, "\t\t\"id\"   : \"0x%x\",", V4L2_PRIV_JPEGQUAL);
+		WRITELN(c, "\t\t\"type\" : \"%s\",", v4l2_control_type_str(V4L2_CTRL_TYPE_INTEGER));
+		WRITELN(c, "\t\t\"val\"  : \"%d\",", jc.quality);
+		WRITELN(c, "\t\t\"min\"  : \"%d\",", JPEGQUAL_MIN);
+		WRITELN(c, "\t\t\"max\"  : \"%d\",", JPEGQUAL_MAX);
+		WRITELN(c, "\t\t\"step\" : \"%d\",", 5);
+		WRITELN(c, "\t\t\"class\": \"%s\"", "custom");
+		WRITE(c, "\t}");
+	}
+
 	WRITE(c, "\r\n  ]");
 	WRITELN(c, "}");
 }
@@ -360,9 +386,10 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 	}
 
 	if (url->query && strstr(url->query, "defaults")) {
+		struct v4l2_jpegcompression jc;
 		int i = 0;
 
-	DPRINTF("resetting %s to defaults\n", dev);
+		DPRINTF("resetting %s to defaults\n", dev);
 		for (i = V4L2_CID_BASE; i < V4L2_CID_LASTP1; i++)
 			if (set_control(fd, i, NULL))
 				continue;
@@ -371,6 +398,9 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 			if (set_control(fd, i, NULL))
 				break;
 
+		jc.quality = JPEGQUAL_DEF;
+		ioctl (fd, VIDIOC_S_JPEGCOMP, &jc);
+
 		WRITELN(client, "200 Ok\r\n");
 		WRITELN(client, "Reset controls");
 		goto out;
@@ -378,9 +408,8 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 
 	if (url->querys) {
 		struct v4l2_queryctrl queryctrl;
-		struct v4l2_control ctrl;
 		char *name, *value;
-		int i;
+		int i, ret, ival;
 		unsigned char header_sent = 0;
 
 		memset (&queryctrl, 0, sizeof (queryctrl));
@@ -395,28 +424,49 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 					perror("VIDIOC_QUERYCTRL");
 				} else
 					name = (char *)queryctrl.name;
-			} else if ((queryctrl.id = find_control(fd, name)) == -1)
+			} else if ((queryctrl.id = find_control(fd, name)) == -1) {
 				continue;
+			}
 
 			matched++;
-			memset (&ctrl, 0, sizeof (ctrl));
-			ctrl.id = queryctrl.id;
-			ctrl.value = strtol(value, NULL, 0);
+			ival = strtol(value, NULL, 0);
+			ret = 0;
 
-			if (ioctl(fd, VIDIOC_S_CTRL, &ctrl)) {
-				perror("VIDIOC_S_CTRL");
+			if (queryctrl.id >= V4L2_CID_PRIVATE_BASE) {
+				switch (queryctrl.id) {
+					case V4L2_PRIV_JPEGQUAL: {
+						struct v4l2_jpegcompression jc;
+						jc.quality = strtol(value, NULL, 0);
+						if (0 != (ret = ioctl (fd, VIDIOC_S_JPEGCOMP, &jc)))
+							perror("VIDIOC_S_JPEGCOMP");
+					}		break;
+				}
+			}
+
+			else {
+				struct v4l2_control ctrl;
+				memset (&ctrl, 0, sizeof (ctrl));
+				ctrl.id = queryctrl.id;
+				ctrl.value = ival;
+
+				if (0 != (ret = ioctl(fd, VIDIOC_S_CTRL, &ctrl)))
+					perror("VIDIOC_S_CTRL");
+			}
+
+			if (ret) {
 				if (header_sent++ == 0) {
 					WRITELN(client, "500 Error\r\n");
 				}
 				WRITELN(client, "Failed setting %s (0x%x) to %d",
-					name, ctrl.id, ctrl.value);
+					name, queryctrl.id, ival);
 			} else {
 				if (header_sent++ == 0) {
 					WRITELN(client, "200 Ok\r\n");
 				}
 				WRITELN(client, "%s (0x%x) set to %d",
-					name, ctrl.id, ctrl.value);
+					name, queryctrl.id, ival);
 			}
+
 		}
 	}
 
