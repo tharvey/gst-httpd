@@ -32,8 +32,6 @@
 #include <sys/ioctl.h>
 
 #include <gst/gst.h>
-#include <gst/app/gstappsink.h>
-#include <gst/app/gstappbuffer.h>
 
 #include "http-server.h"
 #include "http-client.h"
@@ -719,7 +717,7 @@ gboolean
 gst_http_server_io_func (GIOChannel * channel, GIOCondition condition,
     GstHTTPServer * server)
 {
-  gboolean result;
+  gboolean result = FALSE;
   GstHTTPClient *client = NULL;
   GstHTTPServerClass *klass;
 

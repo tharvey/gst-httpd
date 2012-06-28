@@ -90,7 +90,7 @@ GstHTTPMedia *
 gst_http_media_mapping_find (GstHTTPMediaMapping * mapping,
     const gchar *path)
 {
-	GstHTTPMedia *result;
+	GstHTTPMedia *result = NULL;
 	guint i;
 
 	GST_HTTP_MEDIA_MAPPING_LOCK(mapping);

@@ -107,7 +107,7 @@ int
 parse_config(GstHTTPServer *server, const gchar *configfile)
 {
 	GstHTTPMediaMapping *mapping;
-	GstHTTPMedia *media;
+	GstHTTPMedia *media = NULL;
 	gchar *contents;
 	char *path = NULL;
 	char *pipe = NULL;
@@ -413,7 +413,7 @@ serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 	/* obtain mimetype */
 	mimetype = mime_lookup(physpath);
 
-	GST_INFO("Serving %d byte %s to %s:%d as %s", sb.st_size, physpath,
+	GST_INFO("Serving %d byte %s to %s:%d as %s", (int)sb.st_size, physpath,
 		client->peer_ip, client->port, mimetype);
 
 	WRITELN(client, "Last-Modified: %s", unix2date(sb.st_mtime));

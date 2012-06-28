@@ -366,7 +366,7 @@ handle_request(GstHTTPClient *client)
 
 	header[0] = 0;
  	bytes = read(client->sock, header, sizeof(header)-1);
-	header[sizeof(header)] = 0;
+	header[sizeof(header)-1] = 0;
 	GST_DEBUG("read %d bytes from %s:%d (%d)", bytes, client->peer_ip, client->port, client->sock);
 	if (bytes < 0) {
 		GST_ERROR("read error %d from %s:%d:%d:%p\n", bytes,
