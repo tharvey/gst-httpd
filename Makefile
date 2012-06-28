@@ -1,6 +1,6 @@
 LIBS=gstreamer-0.10 gstreamer-app-0.10 glib-2.0 libxml-2.0
 CFLAGS+=$(shell pkg-config --cflags $(LIBS))
-LDFLAGS+=$(shell pkg-config --libs $(LIBS))
+LDFLAGS+=$(shell pkg-config --libs $(LIBS)) -lz
 CFLAGS+=-Wall
 #CFLAGS+=-g
 
