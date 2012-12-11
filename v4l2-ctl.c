@@ -240,7 +240,25 @@ v4l2_control(int fd, struct v4l2_queryctrl *q, GstHTTPClient *c, int *i)
 }
 
 
+/** fcc2s - FourCC to string
+ */
+static const char*
+fcc2s(unsigned int val)
+{
+	static char str[5];
+
+	sprintf(str, "%C%C%C%C",
+		val & 0xff,
+		(val >> 8) & 0xff,
+		(val >> 16) & 0xff,
+		(val >> 24) & 0xff);
+
+	return str;
+}
+
+
 /** enumerate_controls - send a JSON description of all v4l2 controls
+ *   and device capabilities
  * @param fd - file descriptor of v4l2 device
  * @client c - client to send JSON response to
  */
@@ -249,14 +267,53 @@ enumerate_controls(int fd, GstHTTPClient *c)
 {
 	struct v4l2_queryctrl queryctrl;
 	struct v4l2_jpegcompression jc;
+	struct v4l2_fmtdesc fmt;
+	struct v4l2_frmsizeenum frmsize;
+//	struct v4l2_frmivalenum frmival;
 	int i = 0;
 
 	WRITELN(c, "no-cache");
 	WRITELN(c, "Content-Type: application/json\r\n");
 
 	WRITELN(c, "{");
+	WRITELN(c, "  \"formats\": [");
+	fmt.index = 0;
+	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	i = 0;
+	while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) >= 0) {
+		WRITE(c, (i++ > 0)?",\r\n\t":"\t");
+		WRITELN(c, "{");
+		WRITELN(c, "\t\t\"name\" : \"%s\",", fmt.description);
+		WRITELN(c, "\t\t\"id\"   : \"%d\",", fmt.index);
+		WRITE(c, "\t\t\"pixel_format\"  : \"%s\"", fcc2s(fmt.pixelformat));
+		frmsize.pixel_format = fmt.pixelformat;
+		frmsize.index = 0;
+		while (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) >= 0) {
+			if (frmsize.type == V4L2_FRMSIZE_TYPE_DISCRETE) {
+/*
+				frmival.index =0;
+				frmival.pixel_format = fmt.pixelformat;
+				frmival.width = frmsize.discrete.width;
+				frmival.height = frmsize.discrete.height;
+				while (ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &frmival) >= 0) {
+					WRITE(c, (i++ > 0)?",\r\n\t":"\t");
+					frmival.index++;
+				}
+*/
+				WRITE(c, (i++ > 0)?",\r\n":"");
+				WRITE(c, "\t\t\"size%d\" : \"%dx%d\"", frmsize.index, frmsize.discrete.width, frmsize.discrete.height);
+			}
+			frmsize.index++;
+		}
+		WRITE(c, "\r\n");
+		WRITE(c, "\t}");
+		fmt.index++;
+	}
+	WRITE(c, "\r\n  ],");
+
 	WRITELN(c, "  \"controls\": [");
 
+	i = 0;
 	memset (&queryctrl, 0, sizeof (queryctrl));
 
 	// enumerate extended controls (if fail use old method)
@@ -385,6 +442,7 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 		return TRUE;
 	}
 
+	/* reset to default config */
 	if (url->query && strstr(url->query, "defaults")) {
 		struct v4l2_jpegcompression jc;
 		int i = 0;
@@ -406,6 +464,7 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 		goto out;
 	}
 
+	/* get/set control(s) */
 	if (url->querys) {
 		struct v4l2_queryctrl queryctrl;
 		char *name, *value;
