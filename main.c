@@ -390,12 +390,10 @@ serve_page(MediaURL *url, GstHTTPClient *client, gpointer data)
 	char *physpath;
 	const char *mimetype;
 
-printf("%s: path='%s'\n", __func__, url->path);
 	if (strcmp(url->path, "/") == 0)
 		path = g_strconcat(docroot, url->path, "index.html", NULL);
 	else
 		path = g_strconcat(docroot, url->path, NULL);
-printf("%s: path='%s'\n", __func__, path);
 	physpath = realpath(path, NULL);
 	if (!physpath)
 		goto err;
