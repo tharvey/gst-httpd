@@ -21,8 +21,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/videodev2.h>
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -386,7 +390,117 @@ gst_http_media_create_pipeline(GstHTTPMedia *media)
 
 	GST_INFO ("Creating new multipart/jpeg pipeline for '%s'", media->path);
 
-	desc = g_strdup_printf("%s ! appsink name=sink", media->pipeline_desc);
+	if (!strchr(media->pipeline_desc, '!')) {
+		struct v4l2_fmtdesc fmt;
+		struct v4l2_frmsizeenum frmsize;
+		int i = 0;
+		int width, height;
+		int target_w, target_h;
+		char* dev = g_strdup("/dev/video0");
+		const char* mediafmt = NULL;
+		int fd;
+		gchar **elems;
+
+		i = 0;
+		elems = g_strsplit(media->pipeline_desc, " ", 0);
+		target_w = 640;
+		target_h = 480;
+		if (elems[0] && strncmp("/dev/video", elems[0], 10) == 0) {
+				dev = g_strdup(elems[0]);
+				i++;
+		}
+		if (elems[i] && strcmp("low", elems[i]) == 0) {
+			target_w = 640;
+			target_h = 480;
+			i++;
+		}
+		if (elems[i] && strcmp("med", elems[i]) == 0) {
+			target_w = 1024;
+			target_h = 768;
+			i++;
+		}
+		if (elems[i] && strcmp("high", elems[i]) == 0) {
+			target_w = 2592;
+			target_h = 1944;
+			i++;
+		}
+		if (elems[i]) {
+			if (sscanf(elems[i], "%dx%d", &target_w, &target_h) == 2) {
+				i++;
+			}
+		}
+		g_strfreev(elems);
+
+		GST_DEBUG ("opening '%s'", dev);
+		fd = open (dev, O_RDWR | O_NONBLOCK, 0);
+		if (-1 == fd) {
+			GST_ERROR ("Failed to open device:%s", dev);
+			g_free(dev);
+			return 2;
+		}
+
+		GST_DEBUG ("creating pipeline for '%s'", dev);
+		fmt.index = 0;
+		fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		width = 0;
+		height = 0;
+		while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) >= 0) {
+			GST_DEBUG("%d:%s", fmt.index, fmt.description);
+			switch (fmt.pixelformat) {
+				case V4L2_PIX_FMT_MJPEG:
+				case V4L2_PIX_FMT_JPEG:
+					mediafmt = "image/jpeg";
+				case V4L2_PIX_FMT_YUYV:
+				case V4L2_PIX_FMT_SN9C10X:
+				case V4L2_PIX_FMT_SN9C20X_I420:
+					mediafmt = "video/x-raw-yuv";
+					break;
+				default:
+					mediafmt = "video/x-raw-rgb";
+					break;
+			}
+			frmsize.pixel_format = fmt.pixelformat;
+			frmsize.index = 0;
+			while (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) >= 0) {
+				if (frmsize.type == V4L2_FRMSIZE_TYPE_DISCRETE) {
+					if (width == 0 || height == 0) {
+						width = frmsize.discrete.width;
+						height = frmsize.discrete.height;
+					} else if (frmsize.discrete.width == target_w 
+							&& frmsize.discrete.height == target_h)
+					{
+						width = frmsize.discrete.width;
+						height = frmsize.discrete.height;
+						break;
+					} else if (frmsize.discrete.width > width && width < target_w
+					        && frmsize.discrete.height > height && height < target_h) {
+						width = frmsize.discrete.width;
+						height = frmsize.discrete.height;
+					}
+					GST_DEBUG("\t%d:%dx%d", frmsize.index,
+						frmsize.discrete.width, frmsize.discrete.height);
+				}
+				frmsize.index++;
+			}
+			/* hardware encode is most desireable */
+			if (strcmp(mediafmt, "image/jpeg") == 0)
+				break;
+			fmt.index++;
+		}
+		if (strcmp(mediafmt, "image/jpeg") == 0) {
+			desc = g_strdup_printf("v4l2src device=%s ! %s,width=%d,height=%d "
+				"! appsink name=sink",
+				dev, mediafmt, width, height);
+		} else {
+			desc = g_strdup_printf("v4l2src device=%s ! %s,width=%d,height=%d "
+				"! jpegenc ! appsink name=sink",
+				dev, mediafmt, width, height);
+		}
+		g_free(dev);
+	}
+ 	else 
+		desc = g_strdup_printf("%s ! appsink name=sink", media->pipeline_desc);
+
 	GST_DEBUG ("launching pipeline '%s'", desc);
 	if (!(media->pipeline = gst_parse_launch(desc, &err))) {
 		GST_ERROR ("Failed to create pipeline from '%s':%s",
