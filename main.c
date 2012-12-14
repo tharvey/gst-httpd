@@ -40,6 +40,11 @@
 #define LOCAL_PAGES  // useful if/when I have JSON support
 #define SYS_STAT     // monitor /proc/stat for system details
 
+/* CGI 1.0 support (undef CGI_PATH to disable)
+ */
+#define CGI_PATH            "cgi"          // path to cgi excluding / (ie 'cgi')
+#define CAPTURE_PAYLOAD     "/tmp/payload" // store payload in this file
+
 #define VERSION "0.0.1"
 
 GST_DEBUG_CATEGORY_STATIC (gst_http_debug);
@@ -48,6 +53,8 @@ GST_DEBUG_CATEGORY_STATIC (gst_http_debug);
 /* globals
  */
 GMainLoop *loop;
+gchar *docroot = NULL;
+
 #ifdef SYS_STAT
 // CPU stats courtesy busybox/top.c
 struct sysstat {
@@ -442,6 +449,208 @@ err:
 }
 #endif // #ifdef LOCAL_PAGES
 
+#ifdef CGI_PATH
+#include <sys/types.h>
+#include <sys/wait.h>
+
+/** cgi_handoff - hand off to CGI v1.1 (subset of)
+ * @see http://tools.ietf.org/html/draft-robinson-www-interface-00
+ * @param url requested
+ * @param client to serve to
+ * @param data - cgiroot
+ *
+ * TODO:
+ *   - fix input/output to child.  I should be able to dup the socket
+ *     such that the child processes stdin is the un-read payload data in
+ *     in the socket and its stdout writes to the socket yet I haven't figured
+ *     that out yet.  In the meantime I'm saving the payload to a file
+ *     and providing that to the CGI as PAYLOAD_FILE
+ */
+gboolean
+cgi_handoff(MediaURL *url, GstHTTPClient *client, gpointer data)
+{
+	const char *cgiroot = (const char*) data;
+	gchar *path;
+	gchar *scriptname;
+	char *physpath;
+	int pid;
+	int outfd[2];
+	int infd[2];
+#ifdef CAPTURE_PAYLOAD
+	int payload_len = 0;
+#endif
+
+	scriptname = url->path + strlen(CGI_PATH) + 2;
+	path = g_strconcat(cgiroot, url->path + strlen(scriptname), NULL);
+	physpath = realpath(path, NULL);
+	if (!physpath)
+		goto err;
+	/* ensure physpath is within cgiroot */
+	if (strncmp(physpath, cgiroot, strlen(cgiroot)) ||
+	   ((physpath[strlen(cgiroot)] != 0) && (physpath[strlen(cgiroot)] != '/')) )
+	{
+		goto err;
+	}
+	/* ensure file is executable */
+	if (access(physpath, X_OK) < 0)
+	{
+		goto err;
+	}
+
+	/* capture post data to a file */
+#ifdef CAPTURE_PAYLOAD
+{
+	gsize rz;
+	gsize sz;
+	gchar buf[100];
+	gchar *str;
+	int len;
+
+	str = gst_http_client_get_header(client, "Content-Length");
+	if (str)
+		payload_len = atoi(str);
+
+	if (payload_len) {
+		len = payload_len;
+		GST_DEBUG("Reading %d byte payload\n", len);
+		GIOChannel *out = g_io_channel_new_file(CAPTURE_PAYLOAD, "w+", NULL);
+		if (!out) {
+			GST_ERROR("failed to open payload file %s: %s (%d)\n", CAPTURE_PAYLOAD,
+				strerror(errno), errno);
+		} else {
+			while (len) {
+				sz = sizeof(buf);
+				if (len < sz)
+					sz = len;
+				g_io_channel_read_chars(client->gio, buf, sz, &rz, NULL);
+// why does g_io_channel_read_chars work and read block?
+//			rz = read(client->sock, &buf, sz);
+				len -= rz;
+				g_io_channel_write_chars(out, buf, rz, &sz, NULL);
+			}
+			g_io_channel_flush(out, NULL);
+			g_io_channel_close(out);
+		}
+	}
+}
+#endif
+
+	GST_INFO("Executing %s to %s:%d", physpath, client->peer_ip, client->port);
+
+	pipe(outfd); // where the parent is going to write to
+	pipe(infd);  // from where parent is going to read
+
+	pid = fork();
+	if (pid < 0) {
+		GST_ERROR("fork failed: %d\n", errno);
+		goto err;
+	}
+
+	// child
+	if (pid == 0) {
+		char *envp[32];
+		int envc = 0;
+
+#ifdef CAPTURE_PAYLOAD
+		if (payload_len)
+			envp[envc++] = g_strdup_printf("PAYLOAD_FILE=%s", CAPTURE_PAYLOAD);
+#endif
+		envp[envc++] = g_strdup_printf("REQUEST_URI=%s", url->path);
+		envp[envc++] = g_strdup_printf("DOCUMENT_ROOT=%s", docroot);
+		envp[envc++] = g_strdup_printf("SERVER_PROTOCOL=1.0");
+		envp[envc++] = g_strdup_printf("SERVER_SOFTWARE=gst-httpd/" VERSION);
+		envp[envc++] = g_strdup_printf("CONTENT_LENGTH=%s",
+			gst_http_client_get_header(client, "Content-Length"));
+		envp[envc++] = g_strdup_printf("CONTENT_TYPE=%s",
+			gst_http_client_get_header(client, "Content-Type"));
+		envp[envc++] = g_strdup_printf("REQUEST_METHOD=%s", url->method);
+		envp[envc++] = g_strdup_printf("SCRIPT_FILENAME=%s", physpath);
+		envp[envc++] = g_strdup_printf("SCRIPT_NAME=%s", scriptname);
+		envp[envc++] = g_strdup_printf("QUERY_STRING=%s", url->query);
+		envp[envc++] = g_strdup_printf("REMOTE_ADDR=%s", client->peer_ip);
+		envp[envc++] = 0;
+
+		close(STDOUT_FILENO);
+		close(STDIN_FILENO);
+
+		dup2(outfd[0], STDIN_FILENO);
+		dup2(infd[1], STDOUT_FILENO);
+
+		// not required for child
+		close(outfd[0]);
+		close(outfd[1]);
+		close(infd[0]);
+		close(infd[1]);
+
+		//	execl(physpath, physpath, NULL);
+		execle(physpath, physpath, NULL, envp);
+
+		/* should not get here unless error */
+		exit(0);
+	}
+
+	// parent
+	else {
+		int sz;
+		char buf[1024];
+		siginfo_t status;
+		int res;
+		int waiting;
+
+		GST_INFO("spawned CGI child pid=%d\n", pid);
+
+		// these are being used by the child
+		close(outfd[0]);
+		close(infd[1]);
+
+/*
+		write(outfd[1], "foobar\n", 7); // write to childs stdin
+		char input[100];
+		input[read(infd[0], input, 100)] = 0; // read for child's stdin
+*/
+
+		/* send childs stdout to client socket */
+		waiting = 1;
+		while (waiting) {
+			if ((sz = read(infd[0], buf, sizeof(buf))) > 0) {
+				write(client->sock, buf, sz);
+			}
+			status.si_pid = 0;
+			res = waitid(P_PID, pid, &status, WEXITED | WSTOPPED | WNOHANG | WNOWAIT);
+			if (status.si_pid == 0)
+				continue;
+			switch (status.si_code) {
+				case CLD_EXITED: // child called exit (normal)
+				case CLD_KILLED: // child killed by signal
+				case CLD_DUMPED: // child killed by signal and dumped core
+				case CLD_STOPPED: // child stopped by signal
+				case CLD_TRAPPED: // child trapped
+					waiting = 0;
+					break;
+			}
+		}
+		GST_DEBUG("cgi returned %d\n", status.si_status);
+		write(client->sock, "", 0);
+
+		close(outfd[1]);
+		close(infd[0]);
+
+		// reap the process
+		waitpid(pid, NULL, 0);
+	}
+	free(physpath);
+	g_free(path);
+	return TRUE;
+
+err:
+	GST_ERROR("404 Not Found: %s", path);
+	if (physpath)
+		free(physpath);
+	g_free(path);
+	return TRUE;
+}
+#endif // #ifdef CGI_PATH
+
 
 /** main function
  */
@@ -450,8 +659,9 @@ main (int argc, char *argv[])
 {
 	gchar *address = "0.0.0.0";
 	gchar *service = "8080";
-	gchar *docroot = NULL;
 	char *docrootphys = NULL;
+	gchar *cgiroot = NULL;
+	char *cgirootphys = NULL;
 	gchar *sysadmin = "server.json";
 	gchar *pidfile = NULL;
 	GstHTTPServer *server;
@@ -467,6 +677,7 @@ main (int argc, char *argv[])
 		{"address", 'a', 0, G_OPTION_ARG_STRING, &address, "address to listen on", "addr"},
 		{"service", 's', 0, G_OPTION_ARG_STRING, &service, "service to listen on", "service"},
 		{"docroot", 'd', 0, G_OPTION_ARG_STRING, &docroot, "root directory for www", "path"},
+		{"cgiroot", 'c', 0, G_OPTION_ARG_STRING, &cgiroot, "root directory for cgi-bin", "path"},
 		{"sysadmin", 0, 0, G_OPTION_ARG_STRING, &sysadmin, "path to sysadmin", "path"},
 		{"pidfile", 'p', 0, G_OPTION_ARG_STRING, &pidfile, "file to store pid", "filename"},
 		{NULL}
@@ -535,6 +746,18 @@ main (int argc, char *argv[])
 		media = gst_http_media_new_handler ("Server Status", server_status, server);
 		gst_http_media_mapping_add (mapping, sysadmin, media);
 	}
+#ifdef CGI_PATH
+	if (cgiroot) {
+			cgirootphys = realpath(cgiroot, NULL);
+			if (cgirootphys) {
+				media = gst_http_media_new_handler ("CGI Handler", cgi_handoff,
+					cgirootphys);
+				gst_http_media_mapping_add (mapping, CGI_PATH "/*", media);
+			} else {
+				g_print ("Error: cgiroot '%s' not found\n", cgiroot);
+			}
+	}
+#endif
 #ifdef LOCAL_PAGES
 	/* default to a page handler that serves from docroot */
 	if (docroot) {

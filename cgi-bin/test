@@ -1,0 +1,52 @@
+#!/bin/sh
+
+CAT=/bin/cat
+
+header() {
+	echo Content-type: text/html
+	echo ""
+
+	echo "<HTML>"
+	echo "<HEAD><TITLE>Sample CGI</TITLE></HEAD>"
+	echo "<BODY bgcolor="#cccccc" text="#000000">"
+	echo "<HR SIZE=5>"
+}
+
+status() {
+	echo "<H1>Uptime:<H1>"
+	echo "<SMALL><PRE>$(uptime)</PRE></SMALL>"
+	echo "<HR SIZE=5>"
+
+	echo "<H1>Environment:<H1>"
+	echo "<SMALL><PRE>$(env)</PRE></SMALL>"
+	echo "<HR SIZE=5>"
+
+	echo "<H1>Processes:<H1>"
+	echo "<SMALL><PRE>$(ps)</PRE></SMALL>"
+	echo "<HR SIZE=5>"
+}
+
+
+footer() {
+	echo "</BODY>"
+	echo "</HTML>"
+}
+
+post() {
+	local file=$PAYLOAD_FILE
+	local size=$CONTENT_LENGTH
+
+	echo "Post:"
+	[ "$file" -a -r "$file" ] && {
+		echo "	file=$file"
+		echo "	size=$size"
+		ls -l $file
+	}
+}
+
+header
+case "$REQUEST_METHOD" in
+	POST) post;;
+	GET) status;;
+esac
+footer
