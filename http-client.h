@@ -65,6 +65,7 @@ struct _GstHTTPClient {
 	gchar         *serv_ip;
 	gchar         *peer_ip;
 	int            sock;
+	GIOChannel    *gio;
 	guint          port;
 	gchar         **headers;
 	GstHTTPMediaMapping  *media_mapping;
@@ -101,6 +102,7 @@ gint           gst_http_client_writeln   (GstHTTPClient *client,
 void           gst_http_client_set_media_mapping (GstHTTPClient *client,
                                                   GstHTTPMediaMapping *mapping);
 GstHTTPMediaMapping * gst_http_client_get_media_mapping (GstHTTPClient *client);
+gchar					*gst_http_client_get_header(GstHTTPClient *client, const gchar *);
 
 G_END_DECLS
 

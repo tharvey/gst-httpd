@@ -39,6 +39,8 @@
 #include "media-mapping.h"
 #include "media.h"
 
+#define MAX_CLIENT_HEADERS 32
+
 enum
 {
   SIGNAL_CLOSED,
@@ -311,6 +313,7 @@ parse_string(char **src) {
 	return p;
 }
 
+
 // HTTP header - see http://www.w3.org/Protocols/HTTP/1.0/draft-ietf-http-spec.html#Message-Headers
 static void
 client_header(GstHTTPClient *client)
@@ -319,6 +322,31 @@ client_header(GstHTTPClient *client)
 	gst_http_client_writeln(client, "HTTP/1.0 200 OK");
 	gst_http_client_writeln(client, "Server: %s", name);
 	g_free(name);
+}
+
+
+/** return a matching client header (case insenstivie) or NULL if not present
+ */
+gchar
+*gst_http_client_get_header(GstHTTPClient *client, const gchar *h)
+{
+	int i;
+	char *name, *val;
+
+	if (client->headers) {
+		for (i = 0; client->headers[i]; i++) {
+			name = client->headers[i];
+			val = strchr(name, ':');
+			if (val) {
+				val++; // step over ':'
+				while (isspace(*val)) val++;
+				if (strncasecmp(name, h, strlen(h)) == 0) {
+					return val;
+				}
+			}
+		}
+	}
+	return NULL;
 }
 
 
@@ -360,33 +388,46 @@ create_url(char *str)
 static gboolean
 handle_request(GstHTTPClient *client)
 {
-	char header[4096];
-	int bytes;
 	MediaURL *url = NULL;
+	gchar *request;
+	gchar **headers;
+	GError *err = NULL;
+	gchar *line;
+	gsize len;
+	gsize pos;
+	GIOStatus ret;
+	int i;
 
-	header[0] = 0;
- 	bytes = read(client->sock, header, sizeof(header)-1);
-	header[sizeof(header)-1] = 0;
-	GST_DEBUG("read %d bytes from %s:%d (%d)", bytes, client->peer_ip, client->port, client->sock);
-	if (bytes < 0) {
-		GST_ERROR("read error %d from %s:%d:%d:%p\n", bytes,
-			client->peer_ip, client->port, client->sock, client);
-		gst_http_client_close(client, "read error");
+	client->gio = g_io_channel_unix_new(client->sock);
+	ret = g_io_channel_read_line(client->gio, &request, &len, &pos, &err);
+	if (ret == G_IO_STATUS_ERROR || len < 1)
 		return FALSE;
+	request[pos] = 0;
+	headers = malloc(MAX_CLIENT_HEADERS * (sizeof (gchar *)));
+	for (i = 0; i < MAX_CLIENT_HEADERS-1;) {
+		ret = g_io_channel_read_line(client->gio, &line, &len, &pos, &err);
+		if (ret == G_IO_STATUS_ERROR)
+			break;
+		line[pos] = 0;
+		if (*line == 0)
+			break;
+		headers[i++] = line;
 	}
-	// this happens when client closes their end
-	if (bytes == 0) {
-		gst_http_client_close(client, "remote end closed");
-		return FALSE;
-	}
-	client->headers = g_strsplit(header, "\r\n", 0);
-	if (*client->headers) {
-		url = create_url(header);
+	headers[i] = 0;
+	client->headers = headers;
+
+	if (*request) {
+		GST_DEBUG("request:%s\n", request);
+		url = create_url(request);
+		g_free(request);
 		GST_INFO ("client=%s:%d path='%s' query='%s'", client->peer_ip,
 			client->port, url->path, url->query);
 
-		if (strcmp(url->method, "GET") == 0) {
-			client->media = gst_http_media_mapping_find(client->media_mapping, url->path);
+		if (strcmp(url->method, "GET") == 0 ||
+		    strcmp(url->method, "POST") == 0)
+		{
+			client->media = gst_http_media_mapping_find(client->media_mapping,
+				url->path);
 		}
 	}
 
