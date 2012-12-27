@@ -185,6 +185,7 @@ sighandler(int sig)
 			break;
 		// ignore
 		case SIGHUP:
+			return;
 			break;
 	}
 	exit(1);
@@ -703,6 +704,7 @@ main (int argc, char *argv[])
 	/* install signal handler */ 
 	signal(SIGINT, sighandler);
 	signal(SIGSEGV, sighandler);
+	signal(SIGPIPE, SIG_IGN);
 
 	/* init gstreamer and create mainloop */
 	gst_init (&argc, &argv);
