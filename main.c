@@ -482,7 +482,7 @@ cgi_handoff(MediaURL *url, GstHTTPClient *client, gpointer data)
 #endif
 
 	scriptname = url->path + strlen(CGI_PATH) + 2;
-	path = g_strconcat(cgiroot, "/", scriptname, NULL);
+	path = g_strconcat(cgiroot, url->path + strlen(scriptname), NULL);
 	physpath = realpath(path, NULL);
 	if (!physpath)
 		goto err;
