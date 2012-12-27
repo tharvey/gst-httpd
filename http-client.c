@@ -410,20 +410,36 @@ handle_request(GstHTTPClient *client)
 
 	client->gio = g_io_channel_unix_new(client->sock);
 	ret = g_io_channel_read_line(client->gio, &request, &len, &pos, &err);
-	if (ret == G_IO_STATUS_ERROR || len < 1)
+	if (ret == G_IO_STATUS_ERROR) {
+		fprintf(stderr, "read header error: %s\n", err->message);
+		g_error_free(err);
 		return FALSE;
-	request[pos] = 0;
+	}
+	if (ret != G_IO_STATUS_NORMAL || len < 1)
+		return FALSE;
+	request[pos] = 0; // terminate at the line terminator
 	headers = malloc(MAX_CLIENT_HEADERS * (sizeof (gchar *)));
+	headers[0] = 0;
 	for (i = 0; i < MAX_CLIENT_HEADERS-1;) {
 		ret = g_io_channel_read_line(client->gio, &line, &len, &pos, &err);
-		if (ret == G_IO_STATUS_ERROR)
+		if (ret == G_IO_STATUS_ERROR) {
+			fprintf(stderr, "read header error: %s\n", err->message);
+			g_error_free(err);
 			break;
-		line[pos] = 0;
-		if (*line == 0)
+		}
+		if (ret != G_IO_STATUS_NORMAL) {
+			g_free(request);
+			g_strfreev (headers);
+			return FALSE;
+		}
+		line[pos] = 0; // terminate at the line terminator
+		if (*line == 0) {
+			g_free(line);
 			break;
+		}
 		headers[i++] = line;
 	}
-	headers[i] = 0;
+	headers[i] = 0; // terminate the list
 	client->headers = headers;
 
 	if (*request) {
@@ -619,7 +635,7 @@ gst_http_client_accept (GstHTTPClient * client, GIOChannel * channel)
 		client->peer_ip, client->port, client->serv_ip);
 
 #if 0 // if we set NONBLOCK we need to check for EAGAIN on each read/write call
-	/* set non-blocking mode so that we can cacel the communication */
+	/* set non-blocking mode so that we can cancel the communication */
 	fcntl (fd, F_SETFL, O_NONBLOCK);
 #endif
 	client->sock = fd;
