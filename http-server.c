@@ -647,6 +647,8 @@ unmanage_client (GstHTTPClient * client, GstHTTPServer * server)
 	GST_DEBUG_OBJECT (server, "now managing %d clients", g_list_length(server->clients));
 	GST_HTTP_SERVER_UNLOCK (server);
 
+	if (client->media)
+		gst_http_media_stop (client->media, client);
 	g_object_unref (client);
 }
 

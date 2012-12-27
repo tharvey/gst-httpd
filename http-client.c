@@ -111,6 +111,9 @@ gst_http_client_finalize (GObject * obj)
 	if (client->sock != -1)
 		close(client->sock);
 
+	if (client->media)
+		gst_http_media_stop (client->media, client);
+
 	if (client->media_mapping)
 		g_object_unref (client->media_mapping);
 
