@@ -353,7 +353,9 @@ gst_buffer_available(GstAppSink * sink, gpointer user_data)
 				buffer->size, NULL);
 			g_free(fname);
 		}
-		write (c->sock, buffer->data, buffer->size);	
+		if (gst_http_client_writebuf(c, (char*)buffer->data, buffer->size) < 0) {
+			close(c->sock);
+		}
 
 		// if we are serving just an image, close the socket
 		if (strcmp(media->mimetype, "image/jpeg") == 0) {

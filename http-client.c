@@ -263,30 +263,37 @@ gst_http_client_get_media_mapping (GstHTTPClient * client)
 }
 
 gint
+gst_http_client_writebuf(GstHTTPClient *client, const char* buf, int size) 
+{
+	return send(client->sock, buf, size, MSG_NOSIGNAL);
+}
+
+
+gint
 gst_http_client_write(GstHTTPClient *client, const char* fmt, ...)
 {
+	char buf[1024];	
 	va_list args;
-	gint ret = 0;
 
 	va_start(args, fmt);
-	ret = vdprintf(client->sock, fmt, args);
+	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 
-	return ret;
+	return gst_http_client_writebuf(client, buf, strlen(buf));
 }
 
 gint
 gst_http_client_writeln(GstHTTPClient *client, const char* fmt, ...)
 {
+	char buf[1024];	
 	va_list args;
-	gint ret = 0;
 
 	va_start(args, fmt);
-	ret = vdprintf(client->sock, fmt, args);
+	vsnprintf(buf, sizeof(buf) - 3, fmt, args);
+	sprintf(buf + strlen(buf), "\r\n");
 	va_end(args);
-	ret += write(client->sock, "\r\n", 2);
 
-	return ret;
+	return gst_http_client_writebuf(client, buf, strlen(buf));
 }
 
 void

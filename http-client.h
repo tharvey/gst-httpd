@@ -96,6 +96,8 @@ void           gst_http_client_close     (GstHTTPClient *client,
 gint           gst_http_client_write     (GstHTTPClient *client,
                                           const char *fmt, ...)
                                           __attribute__ ((format(printf,2,3))); 
+gint           gst_http_client_writebuf  (GstHTTPClient *client,
+                                          const char *buf,int size); 
 gint           gst_http_client_writeln   (GstHTTPClient *client,
                                           const char *fmt, ...)
                                           __attribute__ ((format(printf,2,3))); 
