@@ -27,6 +27,6 @@ struct MediaURL;
 struct GstHTTPClient;
 
 gboolean v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data);
-gboolean v4l2_config_device(const gchar *devname, GstHTTPMediaMapping *mapping);
+gboolean v4l2_config_device(const gchar *devname, GstHTTPMediaMapping *mapping, const gchar *inputdev);
 
 #endif // #ifndef _V4L2_CTL_H_

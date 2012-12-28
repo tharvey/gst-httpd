@@ -70,6 +70,7 @@ struct _GstHTTPClient {
 	gchar         **headers;
 	GstHTTPMediaMapping  *media_mapping;
 	GstHTTPMedia  *media;
+	time_t         ev_press;
 
 	/* counters */
 	struct avg avg_frames;

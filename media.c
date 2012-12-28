@@ -22,11 +22,14 @@
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <poll.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
+#include <linux/input.h>
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
@@ -49,6 +52,90 @@ G_DEFINE_TYPE (GstHTTPMedia, gst_http_media, G_TYPE_OBJECT);
 GST_DEBUG_CATEGORY_STATIC (http_media_debug);
 #define GST_CAT_DEFAULT http_media_debug
 
+/** input device handling
+ */
+static void *
+input_thread(void *user_data)
+{
+	GstHTTPMedia *media = (GstHTTPMedia *) user_data;
+	char name[256] = "Unknown";
+	struct input_event ev[64];
+	int rd;
+	struct input_id device_info;
+	int i;
+
+	if ((media->input_fd = open(media->input_dev, O_RDONLY)) == -1) {
+		perror("open failed");
+		return NULL;
+	}
+
+	if (ioctl(media->input_fd, EVIOCGNAME(sizeof(name)), name) < 0)
+		perror("EVIOCGNAME failed");
+	if (ioctl(media->input_fd, EVIOCGID, &device_info))
+		perror("EVIOCGID failed");
+
+	GST_INFO( "opened %s: %04hx:%04hx version %04hx: %s\n",
+		media->input_dev, device_info.vendor, device_info.product,
+		device_info.version, name);
+
+	while (1) {
+		struct pollfd fds[1];
+
+		fds[0].fd = media->input_fd;
+		fds[0].events = POLLIN | POLLPRI;
+		if (poll(fds, 1, 2000) == 0)
+			continue;
+		rd = read(media->input_fd, ev, sizeof(ev));
+		if (rd < (int) sizeof(struct input_event)) {
+			if (errno != EBADF)
+				fprintf(stderr, "read failed: %s (%d)\n", strerror(errno), errno);
+			break;
+		}
+		for (i = 0; i < (int) (rd / sizeof(struct input_event)); i++) {
+			if (EV_KEY == ev[i].type && KEY_CAMERA == ev[i].code) {
+				/* NB: value=1 for press, value=0 for release - we don't distinguish */
+				media->ev_press = ev[i].time.tv_sec;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/** start input device thread
+ */
+int
+input_device_open(GstHTTPMedia *media)
+{
+	GST_INFO ("%s", __func__ );
+	if (media->input_dev && !media->input_thread) {
+		media->ev_press = 0;
+		return pthread_create(&media->input_thread, NULL, input_thread, (void*)media);
+	}
+	return 0;
+}
+
+
+/** stop input device thread
+ * (blocks until it is complete)
+ */
+int
+input_device_close(GstHTTPMedia *media)
+{
+	GST_INFO ("%s", __func__ );
+	if (media->input_thread) {
+		close(media->input_fd);
+		sleep(1);
+		pthread_join(media->input_thread, NULL);
+		media->input_fd = 0;
+		media->input_thread = 0;
+	}
+	return 0;
+}
+
+
+/** GstHTTPMedia class
+ */
 static void gst_http_media_get_property (GObject * object, guint propid,
     GValue * value, GParamSpec * pspec);
 static void gst_http_media_set_property (GObject * object, guint propid,
@@ -78,6 +165,7 @@ static void
 gst_http_media_init (GstHTTPMedia * media)
 {
 	media->lock = g_mutex_new ();
+	media->ev_lock = g_mutex_new ();
 
 	media->shared = DEFAULT_SHARED;
 
@@ -106,7 +194,9 @@ gst_http_media_finalize (GObject * object)
 	g_free(media->v4l2srcdev);
 	g_free(media->mimetype);
 	g_free(media->capture);
+	g_free(media->input_dev);
 	g_mutex_free (media->lock);
+	g_mutex_free (media->ev_lock);
 
 	G_OBJECT_CLASS (gst_http_media_parent_class)->finalize (object);
 }
@@ -119,7 +209,8 @@ gst_http_media_finalize (GObject * object)
  * Create a new #GstHTTPMedia instance.
  */
 GstHTTPMedia *
-gst_http_media_new_pipeline (const gchar *desc, const gchar *pipeline)
+gst_http_media_new_pipeline (const gchar *desc, const gchar *pipeline,
+	const gchar *inputdev)
 {
 	GstHTTPMedia *result;
 	gchar **elems;
@@ -131,6 +222,7 @@ gst_http_media_new_pipeline (const gchar *desc, const gchar *pipeline)
 	result->desc = g_strdup(desc);
 	result->pipeline_desc = g_strdup(pipeline);
 	result->mimetype = g_strdup("multipart/x-mixed-replace");
+	result->input_dev = g_strdup(inputdev);
 	//result->mimetype = g_strdup("image/jpeg");
 	elems = g_strsplit(pipeline, "!", 0);
 	if (elems[0] && strstr(elems[0], "v4l2src")) {
@@ -331,13 +423,19 @@ gst_buffer_available(GstAppSink * sink, gpointer user_data)
 			gst_http_client_writeln(c, "--%s", MULTIPART_BOUNDARY);
 			gst_http_client_writeln(c, "Content-Type: image/jpeg");
 			gst_http_client_writeln(c, "Content-Length: %d", buffer->size);
-			gst_http_client_write  (c, "\r\n");
 		}
 		if (strcmp(media->mimetype, "image/jpeg") == 0)
 		{
 			gst_http_client_writeln(c, "Content-Length: %d", buffer->size);
-			gst_http_client_write  (c, "\r\n");
 		}
+		
+		if (media->ev_press && media->ev_press > c->ev_press) {
+			c->ev_press = media->ev_press;
+			gst_http_client_writeln(c, "Button-Press: %ld",
+				(long)(c->ev_press - media->starttime));
+		}
+
+		gst_http_client_write  (c, "\r\n");
 
 		c->ewma_framesize = c->ewma_framesize ?
 				(((c->ewma_framesize * (2 /*weight*/ - 1)) +
@@ -503,6 +601,9 @@ gst_http_media_create_pipeline(GstHTTPMedia *media)
  	else 
 		desc = g_strdup_printf("%s ! appsink name=sink", media->pipeline_desc);
 
+	/* install device event handler */
+	input_device_open(media);
+
 	GST_DEBUG ("launching pipeline '%s'", desc);
 	if (!(media->pipeline = gst_parse_launch(desc, &err))) {
 		GST_ERROR ("Failed to create pipeline from '%s':%s",
@@ -525,6 +626,7 @@ gst_http_media_create_pipeline(GstHTTPMedia *media)
 
 	// set pipeline to playing state
 	gst_element_set_state (media->pipeline, GST_STATE_PLAYING);
+	media->starttime = time(NULL);
 
 	g_free(desc);
 	return 0;
@@ -615,7 +717,10 @@ gst_http_media_stop (GstHTTPMedia *media, GstHTTPClient *client)
 		// set pipeline to NULL state
 		gst_element_set_state (media->pipeline, GST_STATE_NULL);
 		g_object_unref (media->pipeline);
+		input_device_close(media);
 		media->pipeline = NULL;
+		media->ev_press = 0;
+		media->starttime = 0;
 	}
 
 	return 0;

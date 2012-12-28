@@ -564,7 +564,7 @@ out:
  * @param mapping - media mapping
  */
 gboolean
-v4l2_config_device(const gchar *dev, GstHTTPMediaMapping *mapping)
+v4l2_config_device(const gchar *dev, GstHTTPMediaMapping *mapping, const gchar *inputdev)
 {
 	GstHTTPMedia *media;
 	struct v4l2_fmtdesc fmt;
@@ -640,7 +640,7 @@ v4l2_config_device(const gchar *dev, GstHTTPMediaMapping *mapping)
 		gchar *desc = g_strdup_printf("%dx%d %s", w, h, fmt.description);
 		gchar *path = g_strdup_printf("%dx%d", w, h);
 		gchar *pipe = g_strdup_printf("v4l2src device=%s ! %s,width=%d,height=%d%s", dev, mediafmt, w, h, enc);
-		media = gst_http_media_new_pipeline (desc, pipe);
+		media = gst_http_media_new_pipeline (desc, pipe, inputdev);
 		gst_http_media_mapping_add (mapping, path, media);
 		g_free(desc);
 		g_free(path);

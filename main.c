@@ -111,7 +111,8 @@ sysstat_timer(gpointer data)
 #endif //#ifdef SYS_STAT
 
 int
-parse_config(GstHTTPServer *server, const gchar *configfile)
+parse_config(GstHTTPServer *server, const gchar *configfile,
+		const gchar *input_dev)
 {
 	GstHTTPMediaMapping *mapping;
 	GstHTTPMedia *media = NULL;
@@ -153,7 +154,7 @@ parse_config(GstHTTPServer *server, const gchar *configfile)
 			if (*pipe) *pipe++ = 0; // terminate path
 			while (*pipe && isspace(*pipe)) pipe++;
 			if (*path && *pipe) {
-				media = gst_http_media_new_pipeline (desc, pipe);
+				media = gst_http_media_new_pipeline (desc, pipe, input_dev);
 				gst_http_media_mapping_add (mapping, path, media);
 			}
 			desc = NULL;
@@ -230,6 +231,12 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		WRITELN(client, "\t\t\"path\": \"%s\",", name);
 		WRITELN(client, "\t\t\"desc\": \"%s\",", media->desc);
 		WRITELN(client, "\t\t\"pipeline\": \"%s\",", media->pipeline_desc);
+		WRITELN(client, "\t\t\"state\": \"%s\",",
+			media->starttime?"Playing":"Stopped");
+		WRITELN(client, "\t\t\"duration\": \"%ld\",",
+			media->starttime?((long)(time(NULL) - media->starttime)):0);
+		WRITELN(client, "\t\t\"input\": \"%ld\",",
+			media->ev_press?((long)(media->ev_press - media->starttime)):0);
 		WRITELN(client, "\t\t\"width\": \"%d\",", media->width);
 		WRITELN(client, "\t\t\"height\": \"%d\",", media->height);
 		WRITELN(client, "\t\t\"dev\" : \"%s\"", media->v4l2srcdev?media->v4l2srcdev:"");
@@ -673,6 +680,7 @@ main (int argc, char *argv[])
 	GError *err = NULL;
 	GOptionContext *ctx;
 	gchar *configfile = NULL;
+	gchar *input_dev = NULL;
 	int i;
 
 	GOptionEntry options[] = {
@@ -684,6 +692,7 @@ main (int argc, char *argv[])
 		{"sysadmin", 0, 0, G_OPTION_ARG_STRING, &sysadmin, "path to sysadmin", "path"},
 		{"pidfile", 'p', 0, G_OPTION_ARG_STRING, &pidfile, "file to store pid", "filename"},
 		{"device", 0, 0, G_OPTION_ARG_STRING, &device, "video device", "filename"},
+		{"inputdev", 0, 0, G_OPTION_ARG_STRING, &input_dev, "device file for input", "filename"},
 		{NULL}
 	};
 
@@ -721,18 +730,18 @@ main (int argc, char *argv[])
 
 	/* if standalone video device - dynamically create configuration */
 	if (device) {
-		v4l2_config_device(device, mapping);
+		v4l2_config_device(device, mapping, input_dev);
 	}
 
 	/* parse configfile */
 	if (configfile) {
-		parse_config(server, configfile);
+		parse_config(server, configfile, input_dev);
 	}
 
 	/* parse commandline arguments */
 	i = 1;
 	while ( (argc - i) >= 2) {
-		media = gst_http_media_new_pipeline ("", argv[i+1]);
+		media = gst_http_media_new_pipeline ("", argv[i+1], input_dev);
 		gst_http_media_mapping_add (mapping, argv[i], media);
 		i+=2;
 	}

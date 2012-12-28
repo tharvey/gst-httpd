@@ -20,6 +20,8 @@
 #ifndef __GST_HTTP_MEDIA_H__
 #define __GST_HTTP_MEDIA_H__
 
+#include <linux/input.h>
+
 #include <gst/gst.h>
 
 G_BEGIN_DECLS
@@ -70,8 +72,16 @@ struct _GstHTTPMedia {
 	GstElement    *pipeline;
 	guint         width;          // width of stream frame
 	guint         height;         // height of stream frame
+	time_t        starttime;			// time stream playback started
 	gboolean      shared;
 
+	/* input device handling */
+	gchar         *input_dev;			// input device filename
+	int           input_fd;
+	pthread_t     input_thread;
+	time_t        ev_press;
+	GMutex        *ev_lock;
+	
 	/* Media Handler resources */
 	MediaHandlerFunc   func;
 	gpointer      *data;
@@ -92,8 +102,10 @@ struct _GstHTTPMediaClass {
 GType gst_http_media_get_type (void);
 
 /* creating a media */
-GstHTTPMedia * gst_http_media_new_pipeline (const gchar *desc, const gchar *pipeline);
-GstHTTPMedia * gst_http_media_new_handler (const gchar *desc, MediaHandlerFunc, gpointer);
+GstHTTPMedia * gst_http_media_new_pipeline (const gchar *desc,
+	const gchar *pipeline, const gchar *inputdev);
+GstHTTPMedia * gst_http_media_new_handler (const gchar *desc,
+	MediaHandlerFunc, gpointer);
 
 /* media playback/control */
 gint gst_http_media_play (GstHTTPMedia *, GstHTTPClient *);
