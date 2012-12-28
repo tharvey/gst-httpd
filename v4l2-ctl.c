@@ -33,6 +33,7 @@
 
 #include "http-client.h"
 #include "http-server.h"
+#include "media-mapping.h"
 #include "v4l2-ctl.h"
 
 #define DPRINTF(x, args...) fprintf(stdout, x, args)
@@ -554,5 +555,97 @@ v4l2_config(MediaURL *url, GstHTTPClient *client, gpointer data)
 out:
 	close(fd);
 	g_free(dev);
+	return TRUE;
+}
+
+
+/** v4l2_config_device - create media mappings based on device capabilities
+ * @param dev - video device (ie /dev/video0)
+ * @param mapping - media mapping
+ */
+gboolean
+v4l2_config_device(const gchar *dev, GstHTTPMediaMapping *mapping)
+{
+	GstHTTPMedia *media;
+	struct v4l2_fmtdesc fmt;
+	struct v4l2_frmsizeenum frmsize;
+	int fd;
+	int w, h, lw, lh;
+	int fmtidx = -1;
+	gchar *mediafmt;
+	gchar *enc;
+
+	fd = open (dev, O_RDWR | O_NONBLOCK, 0);
+	if (-1 == fd) {
+		fprintf(stderr, "open '%s' failed: %s (%d)", dev, strerror(errno), errno);
+		return FALSE;
+	}
+
+	/* determine best format (prefer MJPG/JPEG which needs no encoding) */
+	fmt.index = 0;
+	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) >= 0) {
+		printf("%d:%s:%s\n", fmt.index, fmt.description, fcc2s(fmt.pixelformat));
+		switch (fmt.pixelformat) {
+			case V4L2_PIX_FMT_MJPEG:
+			case V4L2_PIX_FMT_JPEG:
+				mediafmt = "image/jpeg";
+				fmtidx = fmt.index;
+				enc = "";
+				break;
+			case V4L2_PIX_FMT_YUYV:
+			case V4L2_PIX_FMT_SN9C10X:
+			case V4L2_PIX_FMT_SN9C20X_I420:
+				if (fmtidx == -1) {
+					fmtidx = fmt.index;
+					mediafmt = "video/x-raw-yuv";
+					enc = " ! jpegenc";
+				}
+				break;
+			default:
+				if (fmtidx == -1) {
+					fmtidx = fmt.index;
+					mediafmt = "video/x-raw-rgb";
+					enc = " ! jpegenc";
+				}
+				break;
+		}
+		fmt.index++;
+	}
+
+	/* find framesizes from smallest to largest */
+	fmt.index = fmtidx;
+	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	w = h = 0;
+	while (1) {
+		lw = w;
+		lh = h;
+		w = 9999;
+		h = 9999;
+		frmsize.pixel_format = fmt.pixelformat;
+		frmsize.index = 0;
+		while (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) >= 0) {
+			if (frmsize.type == V4L2_FRMSIZE_TYPE_DISCRETE) {
+				if (frmsize.discrete.width > lw && frmsize.discrete.height > lh) {
+					if (w > frmsize.discrete.width || h > frmsize.discrete.height) {
+						w = frmsize.discrete.width;
+						h = frmsize.discrete.height;
+					}
+				}
+			}
+			frmsize.index++;
+		}
+		if (w == 9999 && h == 9999)
+			break;
+		gchar *desc = g_strdup_printf("%dx%d %s", w, h, fmt.description);
+		gchar *path = g_strdup_printf("%dx%d", w, h);
+		gchar *pipe = g_strdup_printf("v4l2src device=%s ! %s,width=%d,height=%d%s", dev, mediafmt, w, h, enc);
+		media = gst_http_media_new_pipeline (desc, pipe);
+		gst_http_media_mapping_add (mapping, path, media);
+		g_free(desc);
+		g_free(path);
+		g_free(pipe);
+	}
+
 	return TRUE;
 }

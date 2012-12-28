@@ -229,6 +229,7 @@ server_status(MediaURL *url, GstHTTPClient *client, gpointer data)
 		WRITELN(client, "{");
 		WRITELN(client, "\t\t\"path\": \"%s\",", name);
 		WRITELN(client, "\t\t\"desc\": \"%s\",", media->desc);
+		WRITELN(client, "\t\t\"pipeline\": \"%s\",", media->pipeline_desc);
 		WRITELN(client, "\t\t\"width\": \"%d\",", media->width);
 		WRITELN(client, "\t\t\"height\": \"%d\",", media->height);
 		WRITELN(client, "\t\t\"dev\" : \"%s\"", media->v4l2srcdev?media->v4l2srcdev:"");
@@ -665,6 +666,7 @@ main (int argc, char *argv[])
 	char *cgirootphys = NULL;
 	gchar *sysadmin = "server.json";
 	gchar *pidfile = NULL;
+	gchar *device = NULL;
 	GstHTTPServer *server;
 	GstHTTPMediaMapping *mapping;
 	GstHTTPMedia *media;
@@ -681,6 +683,7 @@ main (int argc, char *argv[])
 		{"cgiroot", 'c', 0, G_OPTION_ARG_STRING, &cgiroot, "root directory for cgi-bin", "path"},
 		{"sysadmin", 0, 0, G_OPTION_ARG_STRING, &sysadmin, "path to sysadmin", "path"},
 		{"pidfile", 'p', 0, G_OPTION_ARG_STRING, &pidfile, "file to store pid", "filename"},
+		{"device", 0, 0, G_OPTION_ARG_STRING, &device, "video device", "filename"},
 		{NULL}
 	};
 
@@ -715,6 +718,11 @@ main (int argc, char *argv[])
 	mapping = gst_http_server_get_media_mapping (server);
 	gst_http_server_set_address (server, address);
 	gst_http_server_set_service (server, service);
+
+	/* if standalone video device - dynamically create configuration */
+	if (device) {
+		v4l2_config_device(device, mapping);
+	}
 
 	/* parse configfile */
 	if (configfile) {
