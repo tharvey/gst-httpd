@@ -269,6 +269,7 @@ enumerate_controls(int fd, GstHTTPClient *c)
 	struct v4l2_jpegcompression jc;
 	struct v4l2_fmtdesc fmt;
 	struct v4l2_frmsizeenum frmsize;
+	struct v4l2_capability cap;
 //	struct v4l2_frmivalenum frmival;
 	int i = 0;
 
@@ -276,6 +277,23 @@ enumerate_controls(int fd, GstHTTPClient *c)
 	WRITELN(c, "Content-Type: application/json\r\n");
 
 	WRITELN(c, "{");
+
+	WRITELN(c, "  \"device\": [");
+	if (ioctl(fd, VIDIOC_QUERYCAP, &cap) >= 0) {
+		WRITELN(c, "\t{");
+		WRITELN(c, "\t\t\"name\" : \"%s\",", "");
+		WRITELN(c, "\t\t\"driver\" : \"%s\",", cap.driver);
+		WRITELN(c, "\t\t\"card\" : \"%s\",", cap.card);
+		WRITELN(c, "\t\t\"bus\" : \"%s\",", cap.bus_info);
+		WRITELN(c, "\t\t\"version\" : \"%d.%d.%d\",", 
+			(cap.version>>16) & 0xff,
+			(cap.version>> 8) & 0xff,
+ 			cap.version      & 0xff);
+		WRITELN(c, "\t\t\"capabilities\" : \"0x%08x\"", cap.capabilities);
+		WRITELN(c, "\t}");
+	}
+	WRITE(c, "\r\n  ],");
+
 	WRITELN(c, "  \"formats\": [");
 	fmt.index = 0;
 	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
